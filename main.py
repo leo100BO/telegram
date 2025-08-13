@@ -76,37 +76,39 @@ def send_reminder(bot, reminder):
 def schedule_reminder(bot, reminder):
     job_func = lambda: send_reminder(bot, reminder)
     parts = reminder['schedule_time'].split()
-    day_or_freq = parts[0]
+    day_or_freq = parts[0].lower()
     job_tag = reminder['id']
 
     try:
-        if day_or_freq.lower() == 'щомісяця':
+        # Визначаємо час відправки
+        if day_or_freq == 'щомісяця':
             day_of_month = int(parts[1])
             local_time_str = parts[2]
-            hour, minute = map(int, local_time_str.split(':'))
-            
-            now_in_kyiv = datetime.now(KYIV_TZ)
-            today_in_kyiv_at_time = now_in_kyiv.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            utc_dt = today_in_kyiv_at_time.astimezone(pytz.utc)
-            utc_time_str = utc_dt.strftime("%H:%M")
-            print(f"Планування ID {reminder['id']}: щомісяця {day_of_month} о {local_time_str} -> UTC час '{utc_time_str}'")
-            schedule.every().month.day_of_month(day_of_month).at(utc_time_str).do(job_func).tag(job_tag)
         else:
             local_time_str = parts[1]
-            hour, minute = map(int, local_time_str.split(':'))
-            
-            now_in_kyiv = datetime.now(KYIV_TZ)
-            today_in_kyiv_at_time = now_in_kyiv.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            utc_dt = today_in_kyiv_at_time.astimezone(pytz.utc)
-            utc_time_str = utc_dt.strftime("%H:%M")
-            
-            print(f"Планування ID {reminder['id']}: Київський час '{local_time_str}' -> UTC час для сервера '{utc_time_str}'")
-            
-            if day_or_freq.lower() == 'щодня':
-                schedule.every().day.at(utc_time_str).do(job_func).tag(job_tag)
+        
+        hour, minute = map(int, local_time_str.split(':'))
+        
+        now_in_kyiv = datetime.now(KYIV_TZ)
+        today_in_kyiv_at_time = now_in_kyiv.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        utc_dt = today_in_kyiv_at_time.astimezone(pytz.utc)
+        utc_time_str = utc_dt.strftime("%H:%M")
+        
+        # Плануємо завдання залежно від типу розкладу
+        if day_or_freq == 'щомісяця':
+            print(f"Планування ID {reminder['id']}: щомісяця {day_of_month} о {local_time_str} -> UTC час '{utc_time_str}'")
+            schedule.every().month.day_of_month(day_of_month).at(utc_time_str).do(job_func).tag(job_tag)
+        elif day_or_freq == 'щодня':
+            print(f"Планування ID {reminder['id']}: щодня о {local_time_str} -> UTC час '{utc_time_str}'")
+            schedule.every().day.at(utc_time_str).do(job_func).tag(job_tag)
+        else:
+            days_map = {'щопонеділка': schedule.every().monday, 'щовівторка': schedule.every().tuesday, 'щосереди': schedule.every().wednesday, 'щочетверга': schedule.every().thursday, 'щоп\'ятниці': schedule.every().friday, 'щосуботи': schedule.every().saturday, 'щонеділі': schedule.every().sunday}
+            if day_or_freq in days_map:
+                print(f"Планування ID {reminder['id']}: {day_or_freq} о {local_time_str} -> UTC час '{utc_time_str}'")
+                days_map[day_or_freq].at(utc_time_str).do(job_func).tag(job_tag)
             else:
-                days_map = {'щопонеділка': schedule.every().monday, 'щовівторка': schedule.every().tuesday, 'щосереди': schedule.every().wednesday, 'щочетверга': schedule.every().thursday, 'щоп\'ятниці': schedule.every().friday, 'щосуботи': schedule.every().saturday, 'щонеділі': schedule.every().sunday}
-                days_map[day_or_freq.lower()].at(utc_time_str).do(job_func).tag(job_tag)
+                raise ValueError("Невідомий формат розкладу.")
+
         return True
     except Exception as e:
         print(f"Помилка планування ID {reminder.get('id', 'N/A')}: {e}")
