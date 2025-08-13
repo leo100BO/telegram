@@ -108,26 +108,47 @@ def schedule_reminder(bot, reminder):
         print(f"Помилка планування ID {reminder.get('id', 'N/A')}: {e}")
         return False
 
+# --- ОБРОБКА НАТИСКАННЯ КНОПОК (ОНОВЛЕНО) ---
 def button_callback(update, context):
     query = update.callback_query
     query.answer()
+    
     try:
         action, reminder_id, button_index_str = query.data.split(':')
         button_index = int(button_index_str)
+        
         reminders = load_reminders()
         target_reminder = next((r for r in reminders if r['id'] == reminder_id), None)
+        
         if not target_reminder:
             query.edit_message_text(text=query.message.text_html + "\n\n🤷‍♂️ Не вдалося знайти це нагадування.", parse_mode='HTML')
             return
+
         button_text = target_reminder['buttons'][button_index]
         time_str = datetime.now(KYIV_TZ).strftime('%H:%M:%S')
+        
         original_text = query.message.text_html if query.message.text_html else query.message.caption_html
-        if f"✅ <b>{button_text}</b>" not in original_text:
-            new_text = original_text + f"\n✅ <b>{button_text}</b> виконано о {time_str}"
-            query.edit_message_text(text=new_text, parse_mode='HTML', reply_markup=None)
+        
+        # Створюємо новий текст, додаючи позначку про виконання
+        new_text = original_text + f"\n✅ <b>{button_text}</b> виконано о {time_str}"
+        
+        # Створюємо нову клавіатуру, виключаючи натиснуту кнопку
+        new_keyboard_buttons = []
+        for i, btn_text in enumerate(target_reminder['buttons']):
+            if i != button_index:
+                new_keyboard_buttons.append(
+                    InlineKeyboardButton(btn_text, callback_data=f"btn_press:{reminder_id}:{i}")
+                )
+        
+        # Якщо кнопки ще залишились, створюємо нову клавіатуру, інакше - прибираємо її
+        new_reply_markup = InlineKeyboardMarkup([new_keyboard_buttons]) if new_keyboard_buttons else None
+        
+        query.edit_message_text(text=new_text, parse_mode='HTML', reply_markup=new_reply_markup)
+            
     except Exception as e:
         print(f"Помилка обробки кнопки: {e}")
 
+# --- ДІАЛОГИ ТА КОМАНДИ ---
 def start_add(update, context):
     if not is_user_allowed(update): return ConversationHandler.END
     update.message.reply_text("Крок 1: Надішліть медіа, або /skip.")
@@ -153,17 +174,22 @@ def get_details_add(update, context):
             parts = full_command_str.split(' виключити:', 1)
             full_command_str = parts[0]
             excluded_days = parts[1].strip().split(',')
+        
         chat_ids_part, rest_of_string = full_command_str.split(' ', 1)
         chat_ids = [chat_id.strip() for chat_id in chat_ids_part.split(',')]
+        
         parts = rest_of_string.split('"')
         schedule_time = parts[1]
         text = parts[3]
+
         buttons = re.findall(r'\[\[(.*?)\]\]', text)
+        
         new_reminder = {'id': str(uuid.uuid4())[:8], 'chat_ids': chat_ids, 'schedule_time': schedule_time, 'text': text, 'excluded_days': excluded_days, 'buttons': buttons, 'media_file_id': context.user_data.get('media_file_id'), 'media_type': context.user_data.get('media_type')}
         if not schedule_reminder(context.bot, new_reminder): raise ValueError("Неправильний формат розкладу.")
     except Exception as e:
         update.message.reply_text(f"❌ Помилка: {e}\nСпробуйте знову або /cancel.")
         return ADD_GET_DETAILS
+    
     reminders = load_reminders()
     reminders.append(new_reminder)
     save_reminders(reminders)
@@ -266,6 +292,7 @@ def delete_reminder(update, context):
     else:
         update.message.reply_text(f"🤷‍♂️ Нагадування ID `{reminder_id_to_delete}` не знайдено.")
 
+# --- ЗАПУСК БОТА ---
 def run_scheduler():
     while True:
         schedule.run_pending()
@@ -274,8 +301,10 @@ def run_scheduler():
 def main():
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
+
     add_conv = ConversationHandler(entry_points=[CommandHandler('add', start_add)], states={ADD_GET_MEDIA: [MessageHandler(Filters.photo | Filters.video | Filters.animation, get_media_add), CommandHandler('skip', skip_media_add)], ADD_GET_DETAILS: [MessageHandler(Filters.text & ~Filters.command, get_details_add)]}, fallbacks=[CommandHandler('cancel', cancel)])
     now_conv = ConversationHandler(entry_points=[CommandHandler('now', start_now)], states={NOW_GET_MEDIA: [MessageHandler(Filters.photo | Filters.video | Filters.animation, get_media_now), CommandHandler('skip', skip_media_now)], NOW_GET_DETAILS: [MessageHandler(Filters.text & ~Filters.command, get_details_now)]}, fallbacks=[CommandHandler('cancel', cancel)])
+
     dp.add_handler(add_conv)
     dp.add_handler(now_conv)
     dp.add_handler(CommandHandler("start", start))
@@ -283,15 +312,16 @@ def main():
     dp.add_handler(CommandHandler("list", list_reminders))
     dp.add_handler(CommandHandler("delete", delete_reminder))
     dp.add_handler(CallbackQueryHandler(button_callback))
+    
     print("Завантаження існуючих нагадувань...")
     for r in load_reminders():
-        try:
-            schedule_reminder(updater.bot, r)
-        except Exception as e:
-            print(f"Помилка завантаження нагадування ID {r.get('id', 'N/A')}: {e}")
+        try: schedule_reminder(updater.bot, r)
+        except Exception as e: print(f"Помилка завантаження нагадування ID {r.get('id', 'N/A')}: {e}")
     print("Планування завершено.")
+    
     thread = threading.Thread(target=run_scheduler, daemon=True)
     thread.start()
+    
     print("Бот запущений...")
     updater.start_polling()
     updater.idle()
