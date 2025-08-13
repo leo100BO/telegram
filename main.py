@@ -11,7 +11,6 @@ import pytz
 
 # --- НАЛАШТУВАННЯ ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-# Читаємо список дозволених ID з Secrets/Environment і перетворюємо його на список чисел
 allowed_ids_str = os.environ.get('ALLOWED_USER_IDS', '')
 ALLOWED_USER_IDS = [int(id.strip()) for id in allowed_ids_str.split(',') if id.strip()]
 
@@ -19,13 +18,11 @@ REMINDERS_FILE = 'reminders.json'
 KYIV_TZ = pytz.timezone("Europe/Kyiv")
 WEEKDAYS_MAP = {0: 'пн', 1: 'вт', 2: 'ср', 3: 'чт', 4: 'пт', 5: 'сб', 6: 'нд'}
 
-# Визначаємо стани для діалогів
 ADD_GET_MEDIA, ADD_GET_DETAILS = range(2)
 NOW_GET_MEDIA, NOW_GET_DETAILS = range(2, 4)
 
 # --- ФУНКЦІЯ ПЕРЕВІРКИ ДОСТУПУ ---
 def is_user_allowed(update):
-    """Перевіряє, чи є користувач у списку дозволених."""
     user_id = update.effective_user.id
     if user_id not in ALLOWED_USER_IDS:
         update.message.reply_text("⛔ Вибачте, у вас немає доступу до цього бота.")
@@ -53,25 +50,29 @@ def send_reminder(bot, reminder):
         if current_weekday_kyiv in reminder['excluded_days']:
             print(f"[{datetime.now(KYIV_TZ).strftime('%Y-%m-%d %H:%M:%S')}] Пропущено ID {reminder['id']} (виключений день: {current_weekday_kyiv}).")
             return
-
-    chat_id = int(reminder['chat_id'])
+    
+    # --- ОНОВЛЕНО: Ітерація по списку чатів ---
+    chat_ids = reminder.get('chat_ids', []) # Використовуємо ключ chat_ids
     text = reminder['text']
     media_file_id = reminder.get('media_file_id')
     media_type = reminder.get('media_type')
-    
-    try:
-        if media_file_id:
-            if media_type == 'photo':
-                bot.send_photo(chat_id=chat_id, photo=media_file_id, caption=text, parse_mode='HTML')
-            elif media_type == 'animation':
-                bot.send_animation(chat_id=chat_id, animation=media_file_id, caption=text, parse_mode='HTML')
-            elif media_type == 'video':
-                bot.send_video(chat_id=chat_id, video=media_file_id, caption=text, parse_mode='HTML')
-        else:
-            bot.send_message(chat_id=chat_id, text=text, parse_mode='HTML')
-        print(f"[{datetime.now(KYIV_TZ).strftime('%Y-%m-%d %H:%M:%S')}] ✅ Повідомлення ID {reminder['id']} успішно надіслано в чат {chat_id}")
-    except Exception as e:
-        print(f"[{datetime.now(KYIV_TZ).strftime('%Y-%m-%d %H:%M:%S')}] ❌ Помилка відправки ID {reminder['id']} в чат {chat_id}: {e}")
+
+    for chat_id in chat_ids:
+        try:
+            target_chat_id = int(chat_id)
+            if media_file_id:
+                if media_type == 'photo':
+                    bot.send_photo(chat_id=target_chat_id, photo=media_file_id, caption=text, parse_mode='HTML')
+                elif media_type == 'animation':
+                    bot.send_animation(chat_id=target_chat_id, animation=media_file_id, caption=text, parse_mode='HTML')
+                elif media_type == 'video':
+                    bot.send_video(chat_id=target_chat_id, video=media_file_id, caption=text, parse_mode='HTML')
+            else:
+                bot.send_message(chat_id=target_chat_id, text=text, parse_mode='HTML')
+            print(f"[{datetime.now(KYIV_TZ).strftime('%Y-%m-%d %H:%M:%S')}] ✅ Повідомлення ID {reminder['id']} успішно надіслано в чат {chat_id}")
+            time.sleep(0.1) # Невелика затримка, щоб не спамити API
+        except Exception as e:
+            print(f"[{datetime.now(KYIV_TZ).strftime('%Y-%m-%d %H:%M:%S')}] ❌ Помилка відправки ID {reminder['id']} в чат {chat_id}: {e}")
 
 def schedule_reminder(bot, reminder):
     job_func = lambda: send_reminder(bot, reminder)
@@ -108,15 +109,16 @@ def get_media_add(update, context):
     media_file = update.message.photo[-1] if update.message.photo else update.message.animation or update.message.video
     context.user_data['media_file_id'] = media_file.file_id
     context.user_data['media_type'] = 'photo' if update.message.photo else 'animation' if update.message.animation else 'video'
-    update.message.reply_text("Крок 2: Надішліть деталі:\n<id_чату> \"<розклад>\" \"<текст>\" виключити:дн,дн")
+    update.message.reply_text("Крок 2: Надішліть деталі:\n<id_чату,id_чату,...> \"<розклад>\" \"<текст>\" виключити:дн,дн")
     return ADD_GET_DETAILS
 
 def skip_media_add(update, context):
     context.user_data['media_file_id'] = None
-    update.message.reply_text("Крок 2: Надішліть деталі:\n<id_чату> \"<розклад>\" \"<текст>\" виключити:дн,дн")
+    update.message.reply_text("Крок 2: Надішліть деталі:\n<id_чату,id_чату,...> \"<розклад>\" \"<текст>\" виключити:дн,дн")
     return ADD_GET_DETAILS
 
 def get_details_add(update, context):
+    # --- ОНОВЛЕНО: Парсинг кількох ID чатів ---
     try:
         full_command_str = update.message.text
         excluded_days = []
@@ -124,52 +126,61 @@ def get_details_add(update, context):
             parts = full_command_str.split(' виключити:')
             full_command_str = parts[0]
             excluded_days = parts[1].strip().split(',')
-        chat_id_part, rest_of_string = full_command_str.split(' ', 1)
-        chat_id = chat_id_part.strip()
+        
+        # Розділяємо ID чатів і решту рядка
+        chat_ids_part, rest_of_string = full_command_str.split(' ', 1)
+        chat_ids = [chat_id.strip() for chat_id in chat_ids_part.split(',')]
+        
         parts = rest_of_string.split('"')
         schedule_time = parts[1]
         text = parts[3]
-        new_reminder = {'id': str(uuid.uuid4())[:8], 'chat_id': chat_id, 'schedule_time': schedule_time, 'text': text, 'excluded_days': excluded_days, 'media_file_id': context.user_data.get('media_file_id'), 'media_type': context.user_data.get('media_type')}
+        
+        new_reminder = {'id': str(uuid.uuid4())[:8], 'chat_ids': chat_ids, 'schedule_time': schedule_time, 'text': text, 'excluded_days': excluded_days, 'media_file_id': context.user_data.get('media_file_id'), 'media_type': context.user_data.get('media_type')}
         if not schedule_reminder(context.bot, new_reminder): raise ValueError("Неправильний формат часу/розкладу.")
     except Exception as e:
         update.message.reply_text(f"❌ Помилка: {e}\nСпробуйте знову або /cancel.")
         return ADD_GET_DETAILS
+    
     reminders = load_reminders()
     reminders.append(new_reminder)
     save_reminders(reminders)
-    update.message.reply_text(f"✅ Нагадування ID `{new_reminder['id']}` створено.")
+    update.message.reply_text(f"✅ Нагадування ID `{new_reminder['id']}` створено для {len(chat_ids)} чат(ів).")
     context.user_data.clear()
     return ConversationHandler.END
 
 def start_now(update, context):
     if not is_user_allowed(update): return ConversationHandler.END
-    update.message.reply_text("Крок 1: Надішліть фото/GIF/відео для миттєвої відправки, або /skip.\n\nДля скасування введіть /cancel.")
+    update.message.reply_text("Крок 1: Надішліть фото/GIF/відео, або /skip.\n\nДля скасування /cancel.")
     return NOW_GET_MEDIA
 
 def get_media_now(update, context):
     media_file = update.message.photo[-1] if update.message.photo else update.message.animation or update.message.video
     context.user_data['media_file_id'] = media_file.file_id
     context.user_data['media_type'] = 'photo' if update.message.photo else 'animation' if update.message.animation else 'video'
-    update.message.reply_text("Крок 2: Надішліть деталі для відправки: <id_чату> \"<текст>\"")
+    update.message.reply_text("Крок 2: Надішліть деталі: <id_чату,id_чату,...> \"<текст>\"")
     return NOW_GET_DETAILS
 
 def skip_media_now(update, context):
     context.user_data['media_file_id'] = None
-    update.message.reply_text("Крок 2: Надішліть деталі для відправки: <id_чату> \"<текст>\"")
+    update.message.reply_text("Крок 2: Надішліть деталі: <id_чату,id_чату,...> \"<текст>\"")
     return NOW_GET_DETAILS
 
 def get_details_now(update, context):
+    # --- ОНОВЛЕНО: Парсинг кількох ID чатів для /now ---
     try:
         full_command_str = update.message.text
-        chat_id_part, rest_of_string = full_command_str.split(' ', 1)
-        chat_id = chat_id_part.strip()
+        chat_ids_part, rest_of_string = full_command_str.split(' ', 1)
+        chat_ids = [chat_id.strip() for chat_id in chat_ids_part.split(',')]
+        
         text = rest_of_string.split('"')[1]
-        instant_reminder = {'id': 'now', 'chat_id': chat_id, 'text': text, 'media_file_id': context.user_data.get('media_file_id'), 'media_type': context.user_data.get('media_type')}
-        send_reminder(context.bot, instant_reminder)
-        update.message.reply_text("✅ Повідомлення надіслано.")
+        
+        instant_reminder = {'id': 'now', 'chat_ids': chat_ids, 'text': text, 'media_file_id': context.user_data.get('media_file_id'), 'media_type': context.user_data.get('media_type')}
+        send_reminder(context.bot, instant_reminder) # Викликаємо send_reminder, яка тепер вміє працювати зі списками
+        update.message.reply_text(f"✅ Повідомлення надіслано в {len(chat_ids)} чат(ів).")
     except Exception as e:
         update.message.reply_text(f"❌ Помилка: {e}\nСпробуйте знову або /cancel.")
         return NOW_GET_DETAILS
+    
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -209,9 +220,11 @@ def list_reminders(update, context):
     message_part = "📋 *Активні нагадування:*\n\n"
     
     for r in reminders:
+        # --- ОНОВЛЕНО: Відображення списку чатів ---
+        chat_ids_str = ', '.join(r.get('chat_ids', []))
         reminder_text = (
             f"*ID:* `{r['id']}`\n"
-            f"*Чат:* `{r['chat_id']}`\n"
+            f"*Чати:* `{chat_ids_str}`\n"
             f"*Розклад:* `{r['schedule_time']}`\n"
         )
         if r.get('excluded_days'):
@@ -227,7 +240,7 @@ def list_reminders(update, context):
         else:
             message_part += reminder_text
 
-    if message_part:
+    if message_part and message_part != "📋 *Активні нагадування:*\n\n":
         update.message.reply_text(message_part, parse_mode='Markdown')
 
 def delete_reminder(update, context):
