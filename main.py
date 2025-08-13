@@ -1,6 +1,7 @@
 import telegram
 from telegram.ext import (Updater, CommandHandler, ConversationHandler, MessageHandler, Filters, CallbackQueryHandler)
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.utils.helpers import escape_markdown # <-- Додали новий імпорт
 import schedule
 import time
 import json
@@ -47,12 +48,6 @@ def save_reminders(reminders):
 
 # --- ОСНОВНІ ФУНКЦІЇ БОТА ---
 def send_reminder(bot, reminder):
-    if reminder.get('excluded_days'):
-        current_weekday_kyiv = WEEKDAYS_MAP[datetime.now(KYIV_TZ).weekday()]
-        if current_weekday_kyiv in reminder['excluded_days']:
-            print(f"[{datetime.now(KYIV_TZ).strftime('%Y-%m-%d %H:%M:%S')}] Пропущено ID {reminder['id']} (виключений день: {current_weekday_kyiv}).")
-            return
-            
     schedule_time_str = reminder.get('schedule_time', '')
     now_kyiv = datetime.now(KYIV_TZ)
     if schedule_time_str.lower().startswith('щомісяця'):
@@ -62,6 +57,12 @@ def send_reminder(bot, reminder):
                 return
         except (ValueError, IndexError):
             print(f"Помилка формату для щомісячного нагадування ID {reminder.get('id', 'N/A')}")
+            return
+
+    if reminder.get('excluded_days'):
+        current_weekday_kyiv = WEEKDAYS_MAP[datetime.now(KYIV_TZ).weekday()]
+        if current_weekday_kyiv in reminder['excluded_days']:
+            print(f"[{datetime.now(KYIV_TZ).strftime('%Y-%m-%d %H:%M:%S')}] Пропущено ID {reminder['id']} (виключений день: {current_weekday_kyiv}).")
             return
     
     chat_ids = reminder.get('chat_ids', [])
@@ -103,7 +104,6 @@ def schedule_reminder(bot, reminder):
     day_or_freq = parts[0].lower()
     job_tag = reminder['id']
     local_time_str = ""
-
     try:
         if day_or_freq == 'щомісяця':
             if len(parts) != 3: raise ValueError("Неправильний формат. Потрібно: `щомісяця <день> <час>`")
@@ -111,16 +111,13 @@ def schedule_reminder(bot, reminder):
         else:
             if len(parts) != 2: raise ValueError("Неправильний формат. Потрібно: `<день_тижня> <час>`")
             local_time_str = parts[1]
-
         hour, minute = map(int, local_time_str.split(':'))
         now_in_kyiv = datetime.now(KYIV_TZ)
         today_in_kyiv_at_time = now_in_kyiv.replace(hour=hour, minute=minute, second=0, microsecond=0)
         utc_dt = today_in_kyiv_at_time.astimezone(pytz.utc)
         utc_time_str = utc_dt.strftime("%H:%M")
-        
         print(f"Планування ID {reminder['id']}: '{reminder['schedule_time']}' -> UTC час '{utc_time_str}'")
-
-        if day_or_freq == 'щомісяця' or day_or_freq == 'щодня':
+        if day_or_freq in ['щомісяця', 'щодня']:
             schedule.every().day.at(utc_time_str).do(job_func).tag(job_tag)
         else:
             days_map = {'щопонеділка': schedule.every().monday, 'щовівторка': schedule.every().tuesday, 'щосереди': schedule.every().wednesday, 'щочетверга': schedule.every().thursday, 'щоп\'ятниці': schedule.every().friday, 'щосуботи': schedule.every().saturday, 'щонеділі': schedule.every().sunday}
@@ -130,7 +127,6 @@ def schedule_reminder(bot, reminder):
         print(f"Помилка планування ID {reminder.get('id', 'N/A')}: {e}")
         return False
 
-# --- ОБРОБКА НАТИСКАННЯ КНОПОК ---
 def button_callback(update, context):
     query = update.callback_query
     query.answer()
@@ -143,21 +139,16 @@ def button_callback(update, context):
                 if button.callback_data == pressed_button_data:
                     pressed_button_text = button.text
                     break
-        
         if not pressed_button_text: return
-
         time_str = datetime.now(KYIV_TZ).strftime('%H:%M:%S')
         original_text = query.message.text_html if query.message.text else query.message.caption_html
         new_text = original_text + f"\n✅ <b>{pressed_button_text}</b> виконано о {time_str}"
-        
         new_keyboard_rows = []
         for row in current_keyboard_rows:
             new_row = [button for button in row if button.callback_data != pressed_button_data]
             if new_row:
                 new_keyboard_rows.append(new_row)
-        
         new_reply_markup = InlineKeyboardMarkup(new_keyboard_rows) if new_keyboard_rows else None
-        
         if query.message.text:
             query.edit_message_text(text=new_text, parse_mode='HTML', reply_markup=new_reply_markup)
         elif query.message.caption:
@@ -165,7 +156,6 @@ def button_callback(update, context):
     except Exception as e:
         print(f"Помилка обробки кнопки: {e}")
 
-# --- ДІАЛОГИ ТА КОМАНДИ ---
 def start_add(update, context):
     if not is_user_allowed(update): return ConversationHandler.END
     update.message.reply_text("Крок 1: Надішліть медіа, або /skip.")
@@ -191,22 +181,17 @@ def get_details_add(update, context):
             parts = full_command_str.split(' виключити:', 1)
             full_command_str = parts[0]
             excluded_days = parts[1].strip().split(',')
-        
         chat_ids_part, rest_of_string = full_command_str.split(' ', 1)
         chat_ids = [chat_id.strip() for chat_id in chat_ids_part.split(',')]
-        
         parts = rest_of_string.split('"')
         schedule_time = parts[1]
         text = parts[3]
-
         buttons = re.findall(r'\[\[(.*?)\]\]', text)
-        
         new_reminder = {'id': str(uuid.uuid4())[:8], 'chat_ids': chat_ids, 'schedule_time': schedule_time, 'text': text, 'excluded_days': excluded_days, 'buttons': buttons, 'media_file_id': context.user_data.get('media_file_id'), 'media_type': context.user_data.get('media_type')}
         if not schedule_reminder(context.bot, new_reminder): raise ValueError("Неправильний формат розкладу.")
     except Exception as e:
         update.message.reply_text(f"❌ Помилка: {e}\nСпробуйте знову або /cancel.")
         return ADD_GET_DETAILS
-    
     reminders = load_reminders()
     reminders.append(new_reminder)
     save_reminders(reminders)
@@ -214,7 +199,6 @@ def get_details_add(update, context):
     context.user_data.clear()
     return ConversationHandler.END
 
-# --- ОНОВЛЕНО: ДІАЛОГ ДЛЯ /now з підтримкою кнопок ---
 def start_now(update, context):
     if not is_user_allowed(update): return ConversationHandler.END
     update.message.reply_text("Крок 1: Надішліть медіа, або /skip.")
@@ -238,14 +222,8 @@ def get_details_now(update, context):
         chat_ids_part, rest_of_string = full_command_str.split(' ', 1)
         chat_ids = [chat_id.strip() for chat_id in chat_ids_part.split(',')]
         text = rest_of_string.split('"')[1]
-        
         buttons = re.findall(r'\[\[(.*?)\]\]', text)
-
-        instant_reminder = {
-            'id': 'now', 'chat_ids': chat_ids, 'text': text, 'buttons': buttons,
-            'media_file_id': context.user_data.get('media_file_id'),
-            'media_type': context.user_data.get('media_type')
-        }
+        instant_reminder = {'id': 'now', 'chat_ids': chat_ids, 'text': text, 'buttons': buttons, 'media_file_id': context.user_data.get('media_file_id'), 'media_type': context.user_data.get('media_type')}
         send_reminder(context.bot, instant_reminder)
         update.message.reply_text(f"✅ Повідомлення надіслано в {len(chat_ids)} чат(ів).")
     except Exception as e:
@@ -287,12 +265,14 @@ def list_reminders(update, context):
     message_part = "📋 *Активні нагадування:*\n\n"
     for r in reminders:
         chat_ids_str = ', '.join(r.get('chat_ids', []))
+        # --- ВИПРАВЛЕНО: Екрануємо текст користувача ---
+        user_text = escape_markdown(r.get('text', ''), version=2)
         reminder_text = (f"*ID:* `{r['id']}`\n*Чати:* `{chat_ids_str}`\n*Розклад:* `{r['schedule_time']}`\n")
         if r.get('excluded_days'):
             reminder_text += f"*Виключені дні:* {', '.join(r['excluded_days'])}\n"
-        reminder_text += f"*Текст:* _{r['text']}_\n"
+        reminder_text += f"*Текст:* {user_text}\n" # Тепер текст безпечний
         if r.get('buttons'):
-            reminder_text += f"*Кнопки:* {', '.join(r['buttons'])}\n"
+            reminder_text += f"*Кнопки:* {escape_markdown(', '.join(r['buttons']), version=2)}\n"
         if r.get('media_file_id'):
             reminder_text += f"*Медіа:* Прикріплено\n"
         reminder_text += "--------------------\n"
@@ -317,7 +297,6 @@ def delete_reminder(update, context):
     else:
         update.message.reply_text(f"🤷‍♂️ Нагадування ID `{reminder_id_to_delete}` не знайдено.")
 
-# --- ЗАПУСК БОТА ---
 def run_scheduler():
     while True:
         schedule.run_pending()
@@ -326,10 +305,8 @@ def run_scheduler():
 def main():
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
-
     add_conv = ConversationHandler(entry_points=[CommandHandler('add', start_add)], states={ADD_GET_MEDIA: [MessageHandler(Filters.photo | Filters.video | Filters.animation, get_media_add), CommandHandler('skip', skip_media_add)], ADD_GET_DETAILS: [MessageHandler(Filters.text & ~Filters.command, get_details_add)]}, fallbacks=[CommandHandler('cancel', cancel)])
     now_conv = ConversationHandler(entry_points=[CommandHandler('now', start_now)], states={NOW_GET_MEDIA: [MessageHandler(Filters.photo | Filters.video | Filters.animation, get_media_now), CommandHandler('skip', skip_media_now)], NOW_GET_DETAILS: [MessageHandler(Filters.text & ~Filters.command, get_details_now)]}, fallbacks=[CommandHandler('cancel', cancel)])
-
     dp.add_handler(add_conv)
     dp.add_handler(now_conv)
     dp.add_handler(CommandHandler("start", start))
@@ -337,16 +314,15 @@ def main():
     dp.add_handler(CommandHandler("list", list_reminders))
     dp.add_handler(CommandHandler("delete", delete_reminder))
     dp.add_handler(CallbackQueryHandler(button_callback))
-    
     print("Завантаження існуючих нагадувань...")
     for r in load_reminders():
-        try: schedule_reminder(updater.bot, r)
-        except Exception as e: print(f"Помилка завантаження нагадування ID {r.get('id', 'N/A')}: {e}")
+        try:
+            schedule_reminder(updater.bot, r)
+        except Exception as e:
+            print(f"Помилка завантаження нагадування ID {r.get('id', 'N/A')}: {e}")
     print("Планування завершено.")
-    
     thread = threading.Thread(target=run_scheduler, daemon=True)
     thread.start()
-    
     print("Бот запущений...")
     updater.start_polling()
     updater.idle()
