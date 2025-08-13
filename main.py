@@ -47,27 +47,25 @@ def save_reminders(reminders):
 
 # --- ОСНОВНІ ФУНКЦІЇ БОТА ---
 def send_reminder(bot, reminder):
-    schedule_time_str = reminder.get('schedule_time', '')
-    now_kyiv = datetime.now(KYIV_TZ)
-
-    # Перевірка для щомісячних нагадувань
-    if schedule_time_str.lower().startswith('щомісяця'):
-        try:
-            day_of_month = int(schedule_time_str.split()[1])
-            if now_kyiv.day != day_of_month:
-                return # Сьогодні не той день, нічого не робимо
-        except (ValueError, IndexError):
-            print(f"Помилка формату для щомісячного нагадування ID {reminder.get('id', 'N/A')}")
-            return
-
     if reminder.get('excluded_days'):
         current_weekday_kyiv = WEEKDAYS_MAP[datetime.now(KYIV_TZ).weekday()]
         if current_weekday_kyiv in reminder['excluded_days']:
             print(f"[{datetime.now(KYIV_TZ).strftime('%Y-%m-%d %H:%M:%S')}] Пропущено ID {reminder['id']} (виключений день: {current_weekday_kyiv}).")
             return
+            
+    schedule_time_str = reminder.get('schedule_time', '')
+    now_kyiv = datetime.now(KYIV_TZ)
+    if schedule_time_str.lower().startswith('щомісяця'):
+        try:
+            day_of_month = int(schedule_time_str.split()[1])
+            if now_kyiv.day != day_of_month:
+                return
+        except (ValueError, IndexError):
+            print(f"Помилка формату для щомісячного нагадування ID {reminder.get('id', 'N/A')}")
+            return
     
     chat_ids = reminder.get('chat_ids', [])
-    text = reminder['text']
+    text = reminder.get('text', '')
     media_file_id = reminder.get('media_file_id')
     media_type = reminder.get('media_type')
     buttons = reminder.get('buttons')
@@ -107,7 +105,6 @@ def schedule_reminder(bot, reminder):
     local_time_str = ""
 
     try:
-        # --- ВИПРАВЛЕНО: Правильний розбір розкладу ---
         if day_or_freq == 'щомісяця':
             if len(parts) != 3: raise ValueError("Неправильний формат. Потрібно: `щомісяця <день> <час>`")
             local_time_str = parts[2]
@@ -123,10 +120,7 @@ def schedule_reminder(bot, reminder):
         
         print(f"Планування ID {reminder['id']}: '{reminder['schedule_time']}' -> UTC час '{utc_time_str}'")
 
-        if day_or_freq == 'щомісяця':
-            # Для щомісячних нагадувань плануємо щоденну перевірку
-            schedule.every().day.at(utc_time_str).do(job_func).tag(job_tag)
-        elif day_or_freq == 'щодня':
+        if day_or_freq == 'щомісяця' or day_or_freq == 'щодня':
             schedule.every().day.at(utc_time_str).do(job_func).tag(job_tag)
         else:
             days_map = {'щопонеділка': schedule.every().monday, 'щовівторка': schedule.every().tuesday, 'щосереди': schedule.every().wednesday, 'щочетверга': schedule.every().thursday, 'щоп\'ятниці': schedule.every().friday, 'щосуботи': schedule.every().saturday, 'щонеділі': schedule.every().sunday}
@@ -220,6 +214,7 @@ def get_details_add(update, context):
     context.user_data.clear()
     return ConversationHandler.END
 
+# --- ОНОВЛЕНО: ДІАЛОГ ДЛЯ /now з підтримкою кнопок ---
 def start_now(update, context):
     if not is_user_allowed(update): return ConversationHandler.END
     update.message.reply_text("Крок 1: Надішліть медіа, або /skip.")
@@ -229,12 +224,12 @@ def get_media_now(update, context):
     media_file = update.message.photo[-1] if update.message.photo else update.message.animation or update.message.video
     context.user_data['media_file_id'] = media_file.file_id
     context.user_data['media_type'] = 'photo' if update.message.photo else 'animation' if update.message.animation else 'video'
-    update.message.reply_text("Крок 2: Надішліть деталі: <id_чату...> \"<текст>\"")
+    update.message.reply_text("Крок 2: Надішліть деталі: <id_чату...> \"<текст з кнопками [[...]]>\"")
     return NOW_GET_DETAILS
 
 def skip_media_now(update, context):
     context.user_data['media_file_id'] = None
-    update.message.reply_text("Крок 2: Надішліть деталі: <id_чату...> \"<текст>\"")
+    update.message.reply_text("Крок 2: Надішліть деталі: <id_чату...> \"<текст з кнопками [[...]]>\"")
     return NOW_GET_DETAILS
 
 def get_details_now(update, context):
@@ -243,7 +238,14 @@ def get_details_now(update, context):
         chat_ids_part, rest_of_string = full_command_str.split(' ', 1)
         chat_ids = [chat_id.strip() for chat_id in chat_ids_part.split(',')]
         text = rest_of_string.split('"')[1]
-        instant_reminder = {'id': 'now', 'chat_ids': chat_ids, 'text': text, 'media_file_id': context.user_data.get('media_file_id'), 'media_type': context.user_data.get('media_type')}
+        
+        buttons = re.findall(r'\[\[(.*?)\]\]', text)
+
+        instant_reminder = {
+            'id': 'now', 'chat_ids': chat_ids, 'text': text, 'buttons': buttons,
+            'media_file_id': context.user_data.get('media_file_id'),
+            'media_type': context.user_data.get('media_type')
+        }
         send_reminder(context.bot, instant_reminder)
         update.message.reply_text(f"✅ Повідомлення надіслано в {len(chat_ids)} чат(ів).")
     except Exception as e:
@@ -271,11 +273,6 @@ def show_help(update, context):
         "`/now` - Миттєво надіслати повідомлення.\n"
         "`/list` - Список нагадувань.\n"
         "`/delete <ID>` - Видалити нагадування.\n\n"
-        "*Приклади розкладу:*\n"
-        "`щодня 10:30`\n"
-        "`щопонеділка 15:00`\n"
-        "`щомісяця 15 10:30` (15-го числа кожного місяця)\n"
-        "Для виключення днів: `... виключити:сб,нд`\n\n"
         "*Створення кнопок:*\n"
         "У тексті вкажіть назви кнопок у подвійних квадратних дужках. Наприклад:\n"
         "`... \"Текст [[Кнопка 1]] [[Кнопка 2]]\" ...`"
