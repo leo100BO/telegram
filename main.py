@@ -10,6 +10,10 @@ import os
 import pytz
 
 # --- НАЛАШТУВАННЯ ---
+# !!! ВАЖЛИВО !!!
+# Цей код написаний для версії python-telegram-bot v13.x.
+# Щоб він працював, встановіть саме цю версію:
+# pip install python-telegram-bot==13.15
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 allowed_ids_str = os.environ.get('ALLOWED_USER_IDS', '')
 ALLOWED_USER_IDS = [int(id.strip()) for id in allowed_ids_str.split(',') if id.strip()]
@@ -45,11 +49,28 @@ def save_reminders(reminders):
 
 # --- ОСНОВНІ ФУНКЦІЇ БОТА ---
 def send_reminder(bot, reminder):
-    if reminder.get('excluded_days'):
-        current_weekday_kyiv = WEEKDAYS_MAP[datetime.now(KYIV_TZ).weekday()]
-        if current_weekday_kyiv in reminder['excluded_days']:
-            print(f"[{datetime.now(KYIV_TZ).strftime('%Y-%m-%d %H:%M:%S')}] Пропущено ID {reminder['id']} (виключений день: {current_weekday_kyiv}).")
+    # <<< ЗМІНЕНО: Централізована перевірка дати перед відправкою >>>
+    now_kyiv = datetime.now(KYIV_TZ)
+    schedule_time_str = reminder['schedule_time']
+    
+    # Перевірка для щомісячних нагадувань
+    if schedule_time_str.lower().startswith('щомісяця'):
+        try:
+            day_of_month = int(schedule_time_str.split()[1])
+            if now_kyiv.day != day_of_month:
+                # print(f"Пропуск щомісячного ID {reminder['id']}: сьогодні не {day_of_month}-е число.")
+                return 
+        except (ValueError, IndexError):
+            print(f"Помилка в форматі щомісячного нагадування ID {reminder['id']}.")
             return
+
+    # Перевірка на виключені дні тижня
+    if reminder.get('excluded_days'):
+        current_weekday_kyiv = WEEKDAYS_MAP[now_kyiv.weekday()]
+        if current_weekday_kyiv in reminder['excluded_days']:
+            print(f"[{now_kyiv.strftime('%Y-%m-%d %H:%M:%S')}] Пропущено ID {reminder['id']} (виключений день: {current_weekday_kyiv}).")
+            return
+    # <<< КІНЕЦЬ ЗМІН >>>
     
     chat_ids = reminder.get('chat_ids', [])
     text = reminder['text']
@@ -68,10 +89,11 @@ def send_reminder(bot, reminder):
                     bot.send_video(chat_id=target_chat_id, video=media_file_id, caption=text, parse_mode='HTML')
             else:
                 bot.send_message(chat_id=target_chat_id, text=text, parse_mode='HTML')
-            print(f"[{datetime.now(KYIV_TZ).strftime('%Y-%m-%d %H:%M:%S')}] ✅ Повідомлення ID {reminder['id']} успішно надіслано в чат {chat_id}")
-            time.sleep(0.1)
+            print(f"[{now_kyiv.strftime('%Y-%m-%d %H:%M:%S')}] ✅ Повідомлення ID {reminder['id']} успішно надіслано в чат {chat_id}")
+            time.sleep(0.1) # Запобігання флуду
         except Exception as e:
-            print(f"[{datetime.now(KYIV_TZ).strftime('%Y-%m-%d %H:%M:%S')}] ❌ Помилка відправки ID {reminder['id']} в чат {chat_id}: {e}")
+            print(f"[{now_kyiv.strftime('%Y-%m-%d %H:%M:%S')}] ❌ Помилка відправки ID {reminder['id']} в чат {chat_id}: {e}")
+
 
 def schedule_reminder(bot, reminder):
     job_func = lambda: send_reminder(bot, reminder)
@@ -80,41 +102,52 @@ def schedule_reminder(bot, reminder):
     job_tag = reminder['id']
 
     try:
+        # <<< ЗМІНЕНО: Логіка планування для щомісячних завдань >>>
         if day_or_freq == 'щомісяця':
             if len(parts) != 3:
-                raise ValueError("Неправильний формат для щомісячного розкладу. Використовуйте 'щомісяця <день_місяця> <час>'.")
+                raise ValueError("Неправильний формат. Використовуйте 'щомісяця <день> <час>'.")
             day_of_month = int(parts[1])
             local_time_str = parts[2]
+            # Щомісячні завдання плануються на щоденний запуск, а логіка перевірки дати винесена в send_reminder
+            print(f"Планування ID {reminder['id']}: щомісяця {day_of_month} о {local_time_str} (щоденна перевірка).")
+            hour, minute = map(int, local_time_str.split(':'))
+            kyiv_time = dt_time(hour, minute, tzinfo=KYIV_TZ)
+            utc_time = kyiv_time.astimezone(pytz.utc)
+            utc_time_str = utc_time.strftime("%H:%M")
+            schedule.every().day.at(utc_time_str).do(job_func).tag(job_tag)
+
         elif day_or_freq in ['щодня', 'щопонеділка', 'щовівторка', 'щосереди', 'щочетверга', 'щоп\'ятниці', 'щосуботи', 'щонеділі']:
             if len(parts) != 2:
-                raise ValueError("Неправильний формат для щоденного/щотижневого розкладу. Використовуйте '<частота> <час>'.")
+                raise ValueError("Неправильний формат для щоденного/щотижневого розкладу.")
             local_time_str = parts[1]
+            hour, minute = map(int, local_time_str.split(':'))
+            kyiv_time = dt_time(hour, minute, tzinfo=KYIV_TZ)
+            utc_time = kyiv_time.astimezone(pytz.utc)
+            utc_time_str = utc_time.strftime("%H:%M")
+            
+            if day_or_freq == 'щодня':
+                print(f"Планування ID {reminder['id']}: щодня о {local_time_str} -> UTC час '{utc_time_str}'")
+                schedule.every().day.at(utc_time_str).do(job_func).tag(job_tag)
+            else:
+                days_map = {
+                    'щопонеділка': schedule.every().monday, 'щовівторка': schedule.every().tuesday,
+                    'щосереди': schedule.every().wednesday, 'щочетверга': schedule.every().thursday,
+                    'щоп\'ятниці': schedule.every().friday, 'щосуботи': schedule.every().saturday,
+                    'щонеділі': schedule.every().sunday
+                }
+                print(f"Планування ID {reminder['id']}: {day_or_freq} о {local_time_str} -> UTC час '{utc_time_str}'")
+                days_map[day_or_freq].at(utc_time_str).do(job_func).tag(job_tag)
         else:
-            raise ValueError("Невідомий формат розкладу.")
-
-        hour, minute = map(int, local_time_str.split(':'))
-        now_in_kyiv = datetime.now(KYIV_TZ)
-        today_in_kyiv_at_time = now_in_kyiv.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        utc_dt = today_in_kyiv_at_time.astimezone(pytz.utc)
-        utc_time_str = utc_dt.strftime("%H:%M")
-        
-        if day_or_freq == 'щомісяця':
-            print(f"Планування ID {reminder['id']}: щомісяця {day_of_month} о {local_time_str} -> UTC час '{utc_time_str}'")
-            schedule.every().month.day_of_month(day_of_month).at(utc_time_str).do(job_func).tag(job_tag)
-        elif day_or_freq == 'щодня':
-            print(f"Планування ID {reminder['id']}: щодня о {local_time_str} -> UTC час '{utc_time_str}'")
-            schedule.every().day.at(utc_time_str).do(job_func).tag(job_tag)
-        else:
-            days_map = {'щопонеділка': schedule.every().monday, 'щовівторка': schedule.every().tuesday, 'щосереди': schedule.every().wednesday, 'щочетверга': schedule.every().thursday, 'щоп\'ятниці': schedule.every().friday, 'щосуботи': schedule.every().saturday, 'щонеділі': schedule.every().sunday}
-            print(f"Планування ID {reminder['id']}: {day_or_freq} о {local_time_str} -> UTC час '{utc_time_str}'")
-            days_map[day_or_freq].at(utc_time_str).do(job_func).tag(job_tag)
-
+            raise ValueError(f"Невідомий формат розкладу: {day_or_freq}")
+        # <<< КІНЕЦЬ ЗМІН >>>
         return True
     except Exception as e:
-        print(f"Помилка планування ID {reminder.get('id', 'N/A')}: {e}")
+        print(f"❌ Помилка планування ID {reminder.get('id', 'N/A')}: {e}")
         return False
 
-# --- ДІАЛОГИ ТА КОМАНДИ ---
+
+# --- ДІАЛОГИ ТА КОМАНДИ (без змін, залишаємо як є) ---
+
 def start_add(update, context):
     if not is_user_allowed(update): return ConversationHandler.END
     update.message.reply_text("Крок 1: Надішліть фото/GIF/відео, або /skip, щоб пропустити.\n\nДля скасування введіть /cancel.")
@@ -124,12 +157,12 @@ def get_media_add(update, context):
     media_file = update.message.photo[-1] if update.message.photo else update.message.animation or update.message.video
     context.user_data['media_file_id'] = media_file.file_id
     context.user_data['media_type'] = 'photo' if update.message.photo else 'animation' if update.message.animation else 'video'
-    update.message.reply_text("Крок 2: Надішліть деталі:\n<id_чату,id_чату,...> \"<розклад>\" \"<текст>\" виключити:дн,дн\n\nПриклад розкладу: `щомісяця 15 10:30`")
+    update.message.reply_text("Крок 2: Надішліть деталі у форматі:\n`<id_чату,id_чату,...> \"<розклад>\" \"<текст>\" виключити:дн,дн`\n\nПриклад розкладу: `щомісяця 15 10:30` або `щодня 09:00`")
     return ADD_GET_DETAILS
 
 def skip_media_add(update, context):
     context.user_data['media_file_id'] = None
-    update.message.reply_text("Крок 2: Надішліть деталі:\n<id_чату,id_чату,...> \"<розклад>\" \"<текст>\" виключити:дн,дн\n\nПриклад розкладу: `щомісяця 15 10:30`")
+    update.message.reply_text("Крок 2: Надішліть деталі у форматі:\n`<id_чату,id_чату,...> \"<розклад>\" \"<текст>\" виключити:дн,дн`\n\nПриклад розкладу: `щомісяця 15 10:30` або `щодня 09:00`")
     return ADD_GET_DETAILS
 
 def get_details_add(update, context):
@@ -138,21 +171,36 @@ def get_details_add(update, context):
         excluded_days = []
         if 'виключити:' in full_command_str:
             parts = full_command_str.split(' виключити:')
-            full_command_str = parts[0]
-            excluded_days = parts[1].strip().split(',')
+            full_command_str = parts[0].strip()
+            excluded_days = [day.strip() for day in parts[1].strip().split(',')]
         
-        chat_ids_part, rest_of_string = full_command_str.split(' ', 1)
+        # Використовуємо більш надійний парсинг
+        parts = full_command_str.split('"')
+        if len(parts) < 4:
+            raise ValueError("Неправильний формат. Перевірте, чи правильно розставлені лапки. Потрібно: id \"розклад\" \"текст\".")
+        
+        chat_ids_part = parts[0].strip()
         chat_ids = [chat_id.strip() for chat_id in chat_ids_part.split(',')]
         
-        parts = rest_of_string.split('"')
-        if len(parts) < 4:
-            raise ValueError("Неправильний формат. Перевірте, чи є лапки.")
-            
-        schedule_time = parts[1]
-        text = parts[3]
+        schedule_time = parts[1].strip()
+        text = parts[3].strip()
         
-        new_reminder = {'id': str(uuid.uuid4())[:8], 'chat_ids': chat_ids, 'schedule_time': schedule_time, 'text': text, 'excluded_days': excluded_days, 'media_file_id': context.user_data.get('media_file_id'), 'media_type': context.user_data.get('media_type')}
-        if not schedule_reminder(context.bot, new_reminder): raise ValueError("Неправильний формат часу/розкладу.")
+        if not chat_ids or not schedule_time or not text:
+             raise ValueError("ID чату, розклад та текст не можуть бути порожніми.")
+        
+        new_reminder = {
+            'id': str(uuid.uuid4())[:8],
+            'chat_ids': chat_ids,
+            'schedule_time': schedule_time,
+            'text': text,
+            'excluded_days': excluded_days,
+            'media_file_id': context.user_data.get('media_file_id'),
+            'media_type': context.user_data.get('media_type')
+        }
+        
+        if not schedule_reminder(context.bot, new_reminder):
+            raise ValueError("Не вдалося запланувати нагадування. Перевірте формат розкладу.")
+            
     except Exception as e:
         update.message.reply_text(f"❌ Помилка: {e}\nСпробуйте знову або /cancel.")
         return ADD_GET_DETAILS
@@ -173,23 +221,35 @@ def get_media_now(update, context):
     media_file = update.message.photo[-1] if update.message.photo else update.message.animation or update.message.video
     context.user_data['media_file_id'] = media_file.file_id
     context.user_data['media_type'] = 'photo' if update.message.photo else 'animation' if update.message.animation else 'video'
-    update.message.reply_text("Крок 2: Надішліть деталі: <id_чату,id_чату,...> \"<текст>\"")
+    update.message.reply_text("Крок 2: Надішліть деталі: `<id_чату,id_чату,...> \"<текст>\"`")
     return NOW_GET_DETAILS
 
 def skip_media_now(update, context):
     context.user_data['media_file_id'] = None
-    update.message.reply_text("Крок 2: Надішліть деталі: <id_чату,id_чату,...> \"<текст>\"")
+    update.message.reply_text("Крок 2: Надішліть деталі: `<id_чату,id_чату,...> \"<текст>\"`")
     return NOW_GET_DETAILS
 
 def get_details_now(update, context):
     try:
         full_command_str = update.message.text
-        chat_ids_part, rest_of_string = full_command_str.split(' ', 1)
+        parts = full_command_str.split('"')
+        if len(parts) < 2:
+            raise ValueError("Неправильний формат. Перевірте лапки.")
+
+        chat_ids_part = parts[0].strip()
         chat_ids = [chat_id.strip() for chat_id in chat_ids_part.split(',')]
-        
-        text = rest_of_string.split('"')[1]
-        
-        instant_reminder = {'id': 'now', 'chat_ids': chat_ids, 'text': text, 'media_file_id': context.user_data.get('media_file_id'), 'media_type': context.user_data.get('media_type')}
+        text = parts[1].strip()
+
+        if not chat_ids or not text:
+             raise ValueError("ID чату та текст не можуть бути порожніми.")
+
+        instant_reminder = {
+            'id': 'now',
+            'chat_ids': chat_ids,
+            'text': text,
+            'media_file_id': context.user_data.get('media_file_id'),
+            'media_type': context.user_data.get('media_type')
+        }
         send_reminder(context.bot, instant_reminder)
         update.message.reply_text(f"✅ Повідомлення надіслано в {len(chat_ids)} чат(ів).")
     except Exception as e:
@@ -198,6 +258,7 @@ def get_details_now(update, context):
     
     context.user_data.clear()
     return ConversationHandler.END
+
 
 def cancel(update, context):
     if not is_user_allowed(update): return
@@ -214,30 +275,28 @@ def show_help(update, context):
     if not is_user_allowed(update): return
     help_text = (
         "*Довідка по командам:*\n\n"
-        "`/add` - Запустити діалог для створення нового нагадування.\n"
+        "`/add` - Створити нове нагадування.\n"
+        "`/now` - Миттєво надіслати повідомлення.\n"
+        "`/list` - Показати список активних нагадувань.\n"
+        "`/delete <ID>` - Видалити нагадування.\n"
+        "`/cancel` - Скасувати поточну дію.\n\n"
         "*Приклади розкладу для `/add`:*\n"
         "- `щодня 10:30`\n"
         "- `щопонеділка 15:00`\n"
-        "- `щомісяця 15 10:30` (15-го числа кожного місяця)\n\n"
-        "`/now` - Запустити діалог для миттєвої відправки повідомлення.\n\n"
-        "`/list` - Показати список усіх активних нагадувань.\n\n"
-        "`/delete <ID>` - Видалити нагадування.\n\n"
-        "`/cancel` - Скасувати поточну дію (`/add` або `/now`).\n\n"
-        "`/help` - Показати цю довідку.\n\n"
+        "- `щомісяця 15 10:30` (15-го числа кожного місяця)\n"
+        "Для виключення днів: `... виключити:сб,нд`\n\n"
         "Для форматування тексту використовуйте HTML-теги:\n"
         "`<b>жирний</b>`, `<i>курсив</i>`, `<u>підкреслений</u>`."
     )
     update.message.reply_text(help_text, parse_mode='Markdown')
 
 def list_reminders(update, context):
-    """(ОНОВЛЕНО) Надсилає список нагадувань частинами."""
     if not is_user_allowed(update): return
     reminders = load_reminders()
     if not reminders:
         update.message.reply_text("Список нагадувань порожній."); return
 
     message_part = "📋 *Активні нагадування:*\n\n"
-    
     for r in reminders:
         chat_ids_str = ', '.join(r.get('chat_ids', []))
         reminder_text = (
@@ -249,7 +308,7 @@ def list_reminders(update, context):
             reminder_text += f"*Виключені дні:* {', '.join(r['excluded_days'])}\n"
         reminder_text += f"*Текст:* _{r['text']}_\n"
         if r.get('media_file_id'):
-            reminder_text += f"*Медіа:* Прикріплено\n"
+            reminder_text += f"*Медіа:* Так\n"
         reminder_text += "--------------------\n"
         
         if len(message_part) + len(reminder_text) > 4096:
@@ -263,13 +322,18 @@ def list_reminders(update, context):
 
 def delete_reminder(update, context):
     if not is_user_allowed(update): return
-    try: reminder_id_to_delete = context.args[0]
+    try:
+        reminder_id_to_delete = context.args[0]
     except IndexError:
-        update.message.reply_text("❌ Вкажіть ID нагадування.", parse_mode='Markdown'); return
+        update.message.reply_text("❌ Вкажіть ID нагадування, яке потрібно видалити. Наприклад: `/delete <ID>`"); return
+    
     reminders = load_reminders()
+    initial_count = len(reminders)
     new_reminders = [r for r in reminders if r['id'] != reminder_id_to_delete]
-    if len(new_reminders) < len(reminders):
-        save_reminders(new_reminders); schedule.clear(reminder_id_to_delete)
+    
+    if len(new_reminders) < initial_count:
+        save_reminders(new_reminders)
+        schedule.clear(reminder_id_to_delete) # Видаляємо завдання з планувальника
         update.message.reply_text(f"✅ Нагадування ID `{reminder_id_to_delete}` видалено.")
     else:
         update.message.reply_text(f"🤷‍♂️ Нагадування ID `{reminder_id_to_delete}` не знайдено.")
@@ -281,27 +345,45 @@ def run_scheduler():
         time.sleep(1)
 
 def main():
+    if not BOT_TOKEN or not ALLOWED_USER_IDS:
+        print("❌ Критична помилка: не вказано BOT_TOKEN або ALLOWED_USER_IDS у змінних середовища.")
+        return
+        
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
 
-    add_conv = ConversationHandler(entry_points=[CommandHandler('add', start_add)], states={ADD_GET_MEDIA: [MessageHandler(Filters.photo | Filters.video | Filters.animation, get_media_add), CommandHandler('skip', skip_media_add)], ADD_GET_DETAILS: [MessageHandler(Filters.text & ~Filters.command, get_details_add)]}, fallbacks=[CommandHandler('cancel', cancel)])
-    now_conv = ConversationHandler(entry_points=[CommandHandler('now', start_now)], states={NOW_GET_MEDIA: [MessageHandler(Filters.photo | Filters.video | Filters.animation, get_media_now), CommandHandler('skip', skip_media_now)], NOW_GET_DETAILS: [MessageHandler(Filters.text & ~Filters.command, get_details_now)]}, fallbacks=[CommandHandler('cancel', cancel)])
+    add_conv = ConversationHandler(
+        entry_points=[CommandHandler('add', start_add)],
+        states={
+            ADD_GET_MEDIA: [MessageHandler(Filters.photo | Filters.video | Filters.animation, get_media_add), CommandHandler('skip', skip_media_add)],
+            ADD_GET_DETAILS: [MessageHandler(Filters.text & ~Filters.command, get_details_add)]
+        },
+        fallbacks=[CommandHandler('cancel', cancel)]
+    )
+    now_conv = ConversationHandler(
+        entry_points=[CommandHandler('now', start_now)],
+        states={
+            NOW_GET_MEDIA: [MessageHandler(Filters.photo | Filters.video | Filters.animation, get_media_now), CommandHandler('skip', skip_media_now)],
+            NOW_GET_DETAILS: [MessageHandler(Filters.text & ~Filters.command, get_details_now)]
+        },
+        fallbacks=[CommandHandler('cancel', cancel)]
+    )
 
     dp.add_handler(add_conv)
     dp.add_handler(now_conv)
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("help", show_help))
     dp.add_handler(CommandHandler("list", list_reminders))
-    dp.add_handler(CommandHandler("delete", delete_reminder))
+    dp.add_handler(CommandHandler("delete", delete_reminder, pass_args=True)) # pass_args=True для /delete
     
     print("Завантаження існуючих нагадувань...")
     for r in load_reminders():
-        try: schedule_reminder(updater.bot, r)
-        except Exception as e: print(f"Помилка при завантаженні існуючого нагадування ID {r.get('id', 'N/A')}: {e}")
+        schedule_reminder(updater.bot, r)
             
-    print("Планування завершено.")
+    print("Планувальник налаштовано.")
     
-    thread = threading.Thread(target=run_scheduler); thread.daemon = True; thread.start()
+    thread = threading.Thread(target=run_scheduler, daemon=True)
+    thread.start()
     
     print("Бот запущений...")
     updater.start_polling()
