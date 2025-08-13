@@ -51,8 +51,7 @@ def send_reminder(bot, reminder):
             print(f"[{datetime.now(KYIV_TZ).strftime('%Y-%m-%d %H:%M:%S')}] Пропущено ID {reminder['id']} (виключений день: {current_weekday_kyiv}).")
             return
     
-    # --- ОНОВЛЕНО: Ітерація по списку чатів ---
-    chat_ids = reminder.get('chat_ids', []) # Використовуємо ключ chat_ids
+    chat_ids = reminder.get('chat_ids', [])
     text = reminder['text']
     media_file_id = reminder.get('media_file_id')
     media_type = reminder.get('media_type')
@@ -70,30 +69,44 @@ def send_reminder(bot, reminder):
             else:
                 bot.send_message(chat_id=target_chat_id, text=text, parse_mode='HTML')
             print(f"[{datetime.now(KYIV_TZ).strftime('%Y-%m-%d %H:%M:%S')}] ✅ Повідомлення ID {reminder['id']} успішно надіслано в чат {chat_id}")
-            time.sleep(0.1) # Невелика затримка, щоб не спамити API
+            time.sleep(0.1)
         except Exception as e:
             print(f"[{datetime.now(KYIV_TZ).strftime('%Y-%m-%d %H:%M:%S')}] ❌ Помилка відправки ID {reminder['id']} в чат {chat_id}: {e}")
 
 def schedule_reminder(bot, reminder):
     job_func = lambda: send_reminder(bot, reminder)
     parts = reminder['schedule_time'].split()
-    day_or_freq, local_time_str = parts
+    day_or_freq = parts[0]
     job_tag = reminder['id']
 
     try:
-        hour, minute = map(int, local_time_str.split(':'))
-        now_in_kyiv = datetime.now(KYIV_TZ)
-        today_in_kyiv_at_time = now_in_kyiv.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        utc_dt = today_in_kyiv_at_time.astimezone(pytz.utc)
-        utc_time_str = utc_dt.strftime("%H:%M")
-        
-        print(f"Планування ID {reminder['id']}: Київський час '{local_time_str}' -> UTC час для сервера '{utc_time_str}'")
-
-        if day_or_freq.lower() == 'щодня':
-            schedule.every().day.at(utc_time_str).do(job_func).tag(job_tag)
+        if day_or_freq.lower() == 'щомісяця':
+            day_of_month = int(parts[1])
+            local_time_str = parts[2]
+            hour, minute = map(int, local_time_str.split(':'))
+            
+            now_in_kyiv = datetime.now(KYIV_TZ)
+            today_in_kyiv_at_time = now_in_kyiv.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            utc_dt = today_in_kyiv_at_time.astimezone(pytz.utc)
+            utc_time_str = utc_dt.strftime("%H:%M")
+            print(f"Планування ID {reminder['id']}: щомісяця {day_of_month} о {local_time_str} -> UTC час '{utc_time_str}'")
+            schedule.every().month.day_of_month(day_of_month).at(utc_time_str).do(job_func).tag(job_tag)
         else:
-            days_map = {'щопонеділка': schedule.every().monday, 'щовівторка': schedule.every().tuesday, 'щосереди': schedule.every().wednesday, 'щочетверга': schedule.every().thursday, 'щоп\'ятниці': schedule.every().friday, 'щосуботи': schedule.every().saturday, 'щонеділі': schedule.every().sunday}
-            days_map[day_or_freq.lower()].at(utc_time_str).do(job_func).tag(job_tag)
+            local_time_str = parts[1]
+            hour, minute = map(int, local_time_str.split(':'))
+            
+            now_in_kyiv = datetime.now(KYIV_TZ)
+            today_in_kyiv_at_time = now_in_kyiv.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            utc_dt = today_in_kyiv_at_time.astimezone(pytz.utc)
+            utc_time_str = utc_dt.strftime("%H:%M")
+            
+            print(f"Планування ID {reminder['id']}: Київський час '{local_time_str}' -> UTC час для сервера '{utc_time_str}'")
+            
+            if day_or_freq.lower() == 'щодня':
+                schedule.every().day.at(utc_time_str).do(job_func).tag(job_tag)
+            else:
+                days_map = {'щопонеділка': schedule.every().monday, 'щовівторка': schedule.every().tuesday, 'щосереди': schedule.every().wednesday, 'щочетверга': schedule.every().thursday, 'щоп\'ятниці': schedule.every().friday, 'щосуботи': schedule.every().saturday, 'щонеділі': schedule.every().sunday}
+                days_map[day_or_freq.lower()].at(utc_time_str).do(job_func).tag(job_tag)
         return True
     except Exception as e:
         print(f"Помилка планування ID {reminder.get('id', 'N/A')}: {e}")
@@ -109,16 +122,15 @@ def get_media_add(update, context):
     media_file = update.message.photo[-1] if update.message.photo else update.message.animation or update.message.video
     context.user_data['media_file_id'] = media_file.file_id
     context.user_data['media_type'] = 'photo' if update.message.photo else 'animation' if update.message.animation else 'video'
-    update.message.reply_text("Крок 2: Надішліть деталі:\n<id_чату,id_чату,...> \"<розклад>\" \"<текст>\" виключити:дн,дн")
+    update.message.reply_text("Крок 2: Надішліть деталі:\n<id_чату,id_чату,...> \"<розклад>\" \"<текст>\" виключити:дн,дн\n\nПриклад розкладу: `щомісяця 15 10:30`")
     return ADD_GET_DETAILS
 
 def skip_media_add(update, context):
     context.user_data['media_file_id'] = None
-    update.message.reply_text("Крок 2: Надішліть деталі:\n<id_чату,id_чату,...> \"<розклад>\" \"<текст>\" виключити:дн,дн")
+    update.message.reply_text("Крок 2: Надішліть деталі:\n<id_чату,id_чату,...> \"<розклад>\" \"<текст>\" виключити:дн,дн\n\nПриклад розкладу: `щомісяця 15 10:30`")
     return ADD_GET_DETAILS
 
 def get_details_add(update, context):
-    # --- ОНОВЛЕНО: Парсинг кількох ID чатів ---
     try:
         full_command_str = update.message.text
         excluded_days = []
@@ -127,11 +139,13 @@ def get_details_add(update, context):
             full_command_str = parts[0]
             excluded_days = parts[1].strip().split(',')
         
-        # Розділяємо ID чатів і решту рядка
         chat_ids_part, rest_of_string = full_command_str.split(' ', 1)
         chat_ids = [chat_id.strip() for chat_id in chat_ids_part.split(',')]
         
         parts = rest_of_string.split('"')
+        if len(parts) < 4:
+            raise ValueError("Неправильний формат. Перевірте, чи є лапки.")
+            
         schedule_time = parts[1]
         text = parts[3]
         
@@ -166,7 +180,6 @@ def skip_media_now(update, context):
     return NOW_GET_DETAILS
 
 def get_details_now(update, context):
-    # --- ОНОВЛЕНО: Парсинг кількох ID чатів для /now ---
     try:
         full_command_str = update.message.text
         chat_ids_part, rest_of_string = full_command_str.split(' ', 1)
@@ -175,7 +188,7 @@ def get_details_now(update, context):
         text = rest_of_string.split('"')[1]
         
         instant_reminder = {'id': 'now', 'chat_ids': chat_ids, 'text': text, 'media_file_id': context.user_data.get('media_file_id'), 'media_type': context.user_data.get('media_type')}
-        send_reminder(context.bot, instant_reminder) # Викликаємо send_reminder, яка тепер вміє працювати зі списками
+        send_reminder(context.bot, instant_reminder)
         update.message.reply_text(f"✅ Повідомлення надіслано в {len(chat_ids)} чат(ів).")
     except Exception as e:
         update.message.reply_text(f"❌ Помилка: {e}\nСпробуйте знову або /cancel.")
@@ -199,7 +212,11 @@ def show_help(update, context):
     if not is_user_allowed(update): return
     help_text = (
         "*Довідка по командам:*\n\n"
-        "`/add` - Запустити діалог для створення нового нагадування.\n\n"
+        "`/add` - Запустити діалог для створення нового нагадування.\n"
+        "*Приклади розкладу для `/add`:*\n"
+        "- `щодня 10:30`\n"
+        "- `щопонеділка 15:00`\n"
+        "- `щомісяця 15 10:30` (15-го числа кожного місяця)\n\n"
         "`/now` - Запустити діалог для миттєвої відправки повідомлення.\n\n"
         "`/list` - Показати список усіх активних нагадувань.\n\n"
         "`/delete <ID>` - Видалити нагадування.\n\n"
@@ -220,7 +237,6 @@ def list_reminders(update, context):
     message_part = "📋 *Активні нагадування:*\n\n"
     
     for r in reminders:
-        # --- ОНОВЛЕНО: Відображення списку чатів ---
         chat_ids_str = ', '.join(r.get('chat_ids', []))
         reminder_text = (
             f"*ID:* `{r['id']}`\n"
