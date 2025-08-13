@@ -47,6 +47,19 @@ def save_reminders(reminders):
 
 # --- ОСНОВНІ ФУНКЦІЇ БОТА ---
 def send_reminder(bot, reminder):
+    schedule_time_str = reminder.get('schedule_time', '')
+    now_kyiv = datetime.now(KYIV_TZ)
+
+    # Перевірка для щомісячних нагадувань
+    if schedule_time_str.lower().startswith('щомісяця'):
+        try:
+            day_of_month = int(schedule_time_str.split()[1])
+            if now_kyiv.day != day_of_month:
+                return # Сьогодні не той день, нічого не робимо
+        except (ValueError, IndexError):
+            print(f"Помилка формату для щомісячного нагадування ID {reminder.get('id', 'N/A')}")
+            return
+
     if reminder.get('excluded_days'):
         current_weekday_kyiv = WEEKDAYS_MAP[datetime.now(KYIV_TZ).weekday()]
         if current_weekday_kyiv in reminder['excluded_days']:
@@ -89,34 +102,46 @@ def send_reminder(bot, reminder):
 def schedule_reminder(bot, reminder):
     job_func = lambda: send_reminder(bot, reminder)
     parts = reminder['schedule_time'].split()
-    day_or_freq, local_time_str = parts
+    day_or_freq = parts[0].lower()
     job_tag = reminder['id']
+    local_time_str = ""
+
     try:
+        # --- ВИПРАВЛЕНО: Правильний розбір розкладу ---
+        if day_or_freq == 'щомісяця':
+            if len(parts) != 3: raise ValueError("Неправильний формат. Потрібно: `щомісяця <день> <час>`")
+            local_time_str = parts[2]
+        else:
+            if len(parts) != 2: raise ValueError("Неправильний формат. Потрібно: `<день_тижня> <час>`")
+            local_time_str = parts[1]
+
         hour, minute = map(int, local_time_str.split(':'))
         now_in_kyiv = datetime.now(KYIV_TZ)
         today_in_kyiv_at_time = now_in_kyiv.replace(hour=hour, minute=minute, second=0, microsecond=0)
         utc_dt = today_in_kyiv_at_time.astimezone(pytz.utc)
         utc_time_str = utc_dt.strftime("%H:%M")
+        
         print(f"Планування ID {reminder['id']}: '{reminder['schedule_time']}' -> UTC час '{utc_time_str}'")
-        if day_or_freq.lower() == 'щодня':
+
+        if day_or_freq == 'щомісяця':
+            # Для щомісячних нагадувань плануємо щоденну перевірку
+            schedule.every().day.at(utc_time_str).do(job_func).tag(job_tag)
+        elif day_or_freq == 'щодня':
             schedule.every().day.at(utc_time_str).do(job_func).tag(job_tag)
         else:
             days_map = {'щопонеділка': schedule.every().monday, 'щовівторка': schedule.every().tuesday, 'щосереди': schedule.every().wednesday, 'щочетверга': schedule.every().thursday, 'щоп\'ятниці': schedule.every().friday, 'щосуботи': schedule.every().saturday, 'щонеділі': schedule.every().sunday}
-            days_map[day_or_freq.lower()].at(utc_time_str).do(job_func).tag(job_tag)
+            days_map[day_or_freq].at(utc_time_str).do(job_func).tag(job_tag)
         return True
     except Exception as e:
         print(f"Помилка планування ID {reminder.get('id', 'N/A')}: {e}")
         return False
 
-# --- ОБРОБКА НАТИСКАННЯ КНОПОК (ВИПРАВЛЕНО) ---
+# --- ОБРОБКА НАТИСКАННЯ КНОПОК ---
 def button_callback(update, context):
     query = update.callback_query
     query.answer()
-    
     try:
         pressed_button_data = query.data
-        
-        # Визначаємо текст натиснутої кнопки
         pressed_button_text = ""
         current_keyboard_rows = query.message.reply_markup.inline_keyboard
         for row in current_keyboard_rows:
@@ -128,13 +153,9 @@ def button_callback(update, context):
         if not pressed_button_text: return
 
         time_str = datetime.now(KYIV_TZ).strftime('%H:%M:%S')
-        # Беремо поточний текст з повідомлення (з форматуванням)
         original_text = query.message.text_html if query.message.text else query.message.caption_html
-        
-        # Додаємо позначку про виконання
         new_text = original_text + f"\n✅ <b>{pressed_button_text}</b> виконано о {time_str}"
         
-        # Створюємо нову клавіатуру, виключаючи кнопку, на яку щойно натиснули
         new_keyboard_rows = []
         for row in current_keyboard_rows:
             new_row = [button for button in row if button.callback_data != pressed_button_data]
@@ -143,12 +164,10 @@ def button_callback(update, context):
         
         new_reply_markup = InlineKeyboardMarkup(new_keyboard_rows) if new_keyboard_rows else None
         
-        # Редагуємо повідомлення: або текст, або підпис до медіа
         if query.message.text:
             query.edit_message_text(text=new_text, parse_mode='HTML', reply_markup=new_reply_markup)
         elif query.message.caption:
             query.edit_message_caption(caption=new_text, parse_mode='HTML', reply_markup=new_reply_markup)
-            
     except Exception as e:
         print(f"Помилка обробки кнопки: {e}")
 
@@ -162,12 +181,12 @@ def get_media_add(update, context):
     media_file = update.message.photo[-1] if update.message.photo else update.message.animation or update.message.video
     context.user_data['media_file_id'] = media_file.file_id
     context.user_data['media_type'] = 'photo' if update.message.photo else 'animation' if update.message.animation else 'video'
-    update.message.reply_text("Крок 2: Надішліть деталі:\n<id_чату...> \"<розклад>\" \"<текст з кнопками [[...]]>\" виключити:дн,дн")
+    update.message.reply_text("Крок 2: Надішліть деталі:\n<id_чату...> \"<розклад>\" \"<текст>\" виключити:дн,дн")
     return ADD_GET_DETAILS
 
 def skip_media_add(update, context):
     context.user_data['media_file_id'] = None
-    update.message.reply_text("Крок 2: Надішліть деталі:\n<id_чату...> \"<розклад>\" \"<текст з кнопками [[...]]>\" виключити:дн,дн")
+    update.message.reply_text("Крок 2: Надішліть деталі:\n<id_чату...> \"<розклад>\" \"<текст>\" виключити:дн,дн")
     return ADD_GET_DETAILS
 
 def get_details_add(update, context):
@@ -252,8 +271,13 @@ def show_help(update, context):
         "`/now` - Миттєво надіслати повідомлення.\n"
         "`/list` - Список нагадувань.\n"
         "`/delete <ID>` - Видалити нагадування.\n\n"
+        "*Приклади розкладу:*\n"
+        "`щодня 10:30`\n"
+        "`щопонеділка 15:00`\n"
+        "`щомісяця 15 10:30` (15-го числа кожного місяця)\n"
+        "Для виключення днів: `... виключити:сб,нд`\n\n"
         "*Створення кнопок:*\n"
-        "У тексті для `/add` вкажіть назви кнопок у подвійних квадратних дужках. Наприклад:\n"
+        "У тексті вкажіть назви кнопок у подвійних квадратних дужках. Наприклад:\n"
         "`... \"Текст [[Кнопка 1]] [[Кнопка 2]]\" ...`"
     )
     update.message.reply_text(help_text, parse_mode='Markdown')
