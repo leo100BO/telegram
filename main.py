@@ -108,42 +108,46 @@ def schedule_reminder(bot, reminder):
         print(f"Помилка планування ID {reminder.get('id', 'N/A')}: {e}")
         return False
 
-# --- ОБРОБКА НАТИСКАННЯ КНОПОК (ОНОВЛЕНО) ---
+# --- ОБРОБКА НАТИСКАННЯ КНОПОК (ВИПРАВЛЕНО) ---
 def button_callback(update, context):
     query = update.callback_query
     query.answer()
     
     try:
-        action, reminder_id, button_index_str = query.data.split(':')
-        button_index = int(button_index_str)
+        pressed_button_data = query.data
         
-        reminders = load_reminders()
-        target_reminder = next((r for r in reminders if r['id'] == reminder_id), None)
+        # Визначаємо текст натиснутої кнопки
+        pressed_button_text = ""
+        current_keyboard_rows = query.message.reply_markup.inline_keyboard
+        for row in current_keyboard_rows:
+            for button in row:
+                if button.callback_data == pressed_button_data:
+                    pressed_button_text = button.text
+                    break
         
-        if not target_reminder:
-            query.edit_message_text(text=query.message.text_html + "\n\n🤷‍♂️ Не вдалося знайти це нагадування.", parse_mode='HTML')
-            return
+        if not pressed_button_text: return
 
-        button_text = target_reminder['buttons'][button_index]
         time_str = datetime.now(KYIV_TZ).strftime('%H:%M:%S')
+        # Беремо поточний текст з повідомлення (з форматуванням)
+        original_text = query.message.text_html if query.message.text else query.message.caption_html
         
-        original_text = query.message.text_html if query.message.text_html else query.message.caption_html
+        # Додаємо позначку про виконання
+        new_text = original_text + f"\n✅ <b>{pressed_button_text}</b> виконано о {time_str}"
         
-        # Створюємо новий текст, додаючи позначку про виконання
-        new_text = original_text + f"\n✅ <b>{button_text}</b> виконано о {time_str}"
+        # Створюємо нову клавіатуру, виключаючи кнопку, на яку щойно натиснули
+        new_keyboard_rows = []
+        for row in current_keyboard_rows:
+            new_row = [button for button in row if button.callback_data != pressed_button_data]
+            if new_row:
+                new_keyboard_rows.append(new_row)
         
-        # Створюємо нову клавіатуру, виключаючи натиснуту кнопку
-        new_keyboard_buttons = []
-        for i, btn_text in enumerate(target_reminder['buttons']):
-            if i != button_index:
-                new_keyboard_buttons.append(
-                    InlineKeyboardButton(btn_text, callback_data=f"btn_press:{reminder_id}:{i}")
-                )
+        new_reply_markup = InlineKeyboardMarkup(new_keyboard_rows) if new_keyboard_rows else None
         
-        # Якщо кнопки ще залишились, створюємо нову клавіатуру, інакше - прибираємо її
-        new_reply_markup = InlineKeyboardMarkup([new_keyboard_buttons]) if new_keyboard_buttons else None
-        
-        query.edit_message_text(text=new_text, parse_mode='HTML', reply_markup=new_reply_markup)
+        # Редагуємо повідомлення: або текст, або підпис до медіа
+        if query.message.text:
+            query.edit_message_text(text=new_text, parse_mode='HTML', reply_markup=new_reply_markup)
+        elif query.message.caption:
+            query.edit_message_caption(caption=new_text, parse_mode='HTML', reply_markup=new_reply_markup)
             
     except Exception as e:
         print(f"Помилка обробки кнопки: {e}")
