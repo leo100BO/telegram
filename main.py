@@ -80,21 +80,24 @@ def schedule_reminder(bot, reminder):
     job_tag = reminder['id']
 
     try:
-        # Визначаємо час відправки
         if day_or_freq == 'щомісяця':
+            if len(parts) != 3:
+                raise ValueError("Неправильний формат для щомісячного розкладу. Використовуйте 'щомісяця <день_місяця> <час>'.")
             day_of_month = int(parts[1])
             local_time_str = parts[2]
-        else:
+        elif day_or_freq in ['щодня', 'щопонеділка', 'щовівторка', 'щосереди', 'щочетверга', 'щоп\'ятниці', 'щосуботи', 'щонеділі']:
+            if len(parts) != 2:
+                raise ValueError("Неправильний формат для щоденного/щотижневого розкладу. Використовуйте '<частота> <час>'.")
             local_time_str = parts[1]
-        
+        else:
+            raise ValueError("Невідомий формат розкладу.")
+
         hour, minute = map(int, local_time_str.split(':'))
-        
         now_in_kyiv = datetime.now(KYIV_TZ)
         today_in_kyiv_at_time = now_in_kyiv.replace(hour=hour, minute=minute, second=0, microsecond=0)
         utc_dt = today_in_kyiv_at_time.astimezone(pytz.utc)
         utc_time_str = utc_dt.strftime("%H:%M")
         
-        # Плануємо завдання залежно від типу розкладу
         if day_or_freq == 'щомісяця':
             print(f"Планування ID {reminder['id']}: щомісяця {day_of_month} о {local_time_str} -> UTC час '{utc_time_str}'")
             schedule.every().month.day_of_month(day_of_month).at(utc_time_str).do(job_func).tag(job_tag)
@@ -103,11 +106,8 @@ def schedule_reminder(bot, reminder):
             schedule.every().day.at(utc_time_str).do(job_func).tag(job_tag)
         else:
             days_map = {'щопонеділка': schedule.every().monday, 'щовівторка': schedule.every().tuesday, 'щосереди': schedule.every().wednesday, 'щочетверга': schedule.every().thursday, 'щоп\'ятниці': schedule.every().friday, 'щосуботи': schedule.every().saturday, 'щонеділі': schedule.every().sunday}
-            if day_or_freq in days_map:
-                print(f"Планування ID {reminder['id']}: {day_or_freq} о {local_time_str} -> UTC час '{utc_time_str}'")
-                days_map[day_or_freq].at(utc_time_str).do(job_func).tag(job_tag)
-            else:
-                raise ValueError("Невідомий формат розкладу.")
+            print(f"Планування ID {reminder['id']}: {day_or_freq} о {local_time_str} -> UTC час '{utc_time_str}'")
+            days_map[day_or_freq].at(utc_time_str).do(job_func).tag(job_tag)
 
         return True
     except Exception as e:
