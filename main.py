@@ -8,13 +8,9 @@ import uuid
 from datetime import datetime, time as dt_time
 import os
 import pytz
-import shlex # <-- ДОДАНО ІМПОРТ
+import shlex
 
 # --- НАЛАШТУВАННЯ ---
-# !!! ВАЖЛИВО !!!
-# Цей код написаний для версії python-telegram-bot v13.x.
-# Щоб він працював, встановіть саме цю версію:
-# pip install python-telegram-bot==13.15
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 allowed_ids_str = os.environ.get('ALLOWED_USER_IDS', '')
 ALLOWED_USER_IDS = [int(id.strip()) for id in allowed_ids_str.split(',') if id.strip()]
@@ -60,14 +56,14 @@ def send_reminder(bot, reminder):
             if now_kyiv.day != day_of_month:
                 return 
         except (ValueError, IndexError):
-            print(f"Помилка в форматі щомісячного нагадування ID {reminder['id']}.")
+            print(f"Помилка в форматі щомісячного нагадування ID {reminder.get('id', 'N/A')}.")
             return
 
     # Перевірка на виключені дні тижня
     if reminder.get('excluded_days'):
         current_weekday_kyiv = WEEKDAYS_MAP[now_kyiv.weekday()]
         if current_weekday_kyiv in reminder['excluded_days']:
-            print(f"[{now_kyiv.strftime('%Y-%m-%d %H:%M:%S')}] Пропущено ID {reminder['id']} (виключений день: {current_weekday_kyiv}).")
+            print(f"[{now_kyiv.strftime('%Y-%m-%d %H:%M:%S')}] Пропущено ID {reminder.get('id', 'N/A')} (виключений день: {current_weekday_kyiv}).")
             return
             
     chat_ids = reminder.get('chat_ids', [])
@@ -92,7 +88,6 @@ def send_reminder(bot, reminder):
         except Exception as e:
             print(f"[{now_kyiv.strftime('%Y-%m-%d %H:%M:%S')}] ❌ Помилка відправки ID {reminder.get('id', 'N/A')} в чат {chat_id}: {e}")
 
-
 def schedule_reminder(bot, reminder):
     job_func = lambda: send_reminder(bot, reminder)
     parts = reminder['schedule_time'].split()
@@ -101,55 +96,41 @@ def schedule_reminder(bot, reminder):
 
     try:
         if day_or_freq == 'щомісяця':
-            if len(parts) != 3:
-                raise ValueError("Неправильний формат. Використовуйте 'щомісяця <день> <час>'.")
-            day_of_month = int(parts[1])
+            if len(parts) != 3: raise ValueError("Неправильний формат. Використовуйте 'щомісяця <день> <час>'.")
             local_time_str = parts[2]
-            print(f"Планування ID {reminder['id']}: щомісяця {day_of_month} о {local_time_str} (щоденна перевірка).")
-            hour, minute = map(int, local_time_str.split(':'))
-            kyiv_time = dt_time(hour, minute, tzinfo=KYIV_TZ)
-            utc_time = kyiv_time.astimezone(pytz.utc)
-            utc_time_str = utc_time.strftime("%H:%M")
-            schedule.every().day.at(utc_time_str).do(job_func).tag(job_tag)
-
-        elif day_or_freq in ['щодня', 'щопонеділка', 'щовівторка', 'щосереди', 'щочетверга', 'щоп\'ятниці', 'щосуботи', 'щонеділі']:
-            if len(parts) != 2:
-                raise ValueError("Неправильний формат для щоденного/щотижневого розкладу.")
-            local_time_str = parts[1]
-            hour, minute = map(int, local_time_str.split(':'))
-            kyiv_time = dt_time(hour, minute, tzinfo=KYIV_TZ)
-            utc_time = kyiv_time.astimezone(pytz.utc)
-            utc_time_str = utc_time.strftime("%H:%M")
-            
-            if day_or_freq == 'щодня':
-                print(f"Планування ID {reminder['id']}: щодня о {local_time_str} -> UTC час '{utc_time_str}'")
-                schedule.every().day.at(utc_time_str).do(job_func).tag(job_tag)
-            else:
-                days_map = {
-                    'щопонеділка': schedule.every().monday, 'щовівторка': schedule.every().tuesday,
-                    'щосереди': schedule.every().wednesday, 'щочетверга': schedule.every().thursday,
-                    'щоп\'ятниці': schedule.every().friday, 'щосуботи': schedule.every().saturday,
-                    'щонеділі': schedule.every().sunday
-                }
-                print(f"Планування ID {reminder['id']}: {day_or_freq} о {local_time_str} -> UTC час '{utc_time_str}'")
-                days_map[day_or_freq].at(utc_time_str).do(job_func).tag(job_tag)
         else:
-            raise ValueError(f"Невідомий формат розкладу: {day_or_freq}")
+            if len(parts) != 2: raise ValueError("Неправильний формат для щоденного/щотижневого розкладу.")
+            local_time_str = parts[1]
+
+        hour, minute = map(int, local_time_str.split(':'))
+        now_in_kyiv = datetime.now(KYIV_TZ)
+        today_in_kyiv_at_time = now_in_kyiv.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        utc_dt = today_in_kyiv_at_time.astimezone(pytz.utc)
+        utc_time_str = utc_dt.strftime("%H:%M")
+        
+        print(f"Планування ID {reminder['id']}: '{reminder['schedule_time']}' -> UTC час для сервера '{utc_time_str}'")
+
+        if day_or_freq == 'щомісяця':
+             # Щомісячні нагадування перевіряються щодня, а логіка відправки - в send_reminder
+            schedule.every().day.at(utc_time_str).do(job_func).tag(job_tag)
+        elif day_or_freq == 'щодня':
+            schedule.every().day.at(utc_time_str).do(job_func).tag(job_tag)
+        else:
+            days_map = {'щопонеділка': schedule.every().monday, 'щовівторка': schedule.every().tuesday, 'щосереди': schedule.every().wednesday, 'щочетверга': schedule.every().thursday, 'щоп\'ятниці': schedule.every().friday, 'щосуботи': schedule.every().saturday, 'щонеділі': schedule.every().sunday}
+            days_map[day_or_freq].at(utc_time_str).do(job_func).tag(job_tag)
         return True
     except Exception as e:
         print(f"❌ Помилка планування ID {reminder.get('id', 'N/A')}: {e}")
         return False
 
-
 # --- ДІАЛОГИ ТА КОМАНДИ ---
-
 def start_add(update, context):
     if not is_user_allowed(update): return ConversationHandler.END
     update.message.reply_text("Крок 1: Надішліть фото/GIF/відео, або /skip, щоб пропустити.\n\nДля скасування введіть /cancel.")
     return ADD_GET_MEDIA
 
 def get_media_add(update, context):
-    media_file = update.message.photo[-1] if update.message.photo else update.message.animation or update.message.video
+    media_file = update.message.photo[-1] if update.message.photo else (update.message.animation or update.message.video)
     context.user_data['media_file_id'] = media_file.file_id
     context.user_data['media_type'] = 'photo' if update.message.photo else 'animation' if update.message.animation else 'video'
     update.message.reply_text("Крок 2: Надішліть деталі у форматі:\n`id_чату \"розклад\" \"текст\" виключити:дн,дн`\n\nПриклад розкладу: `щомісяця 15 10:30` або `щодня 09:00`")
@@ -160,45 +141,36 @@ def skip_media_add(update, context):
     update.message.reply_text("Крок 2: Надішліть деталі у форматі:\n`id_чату \"розклад\" \"текст\" виключити:дн,дн`\n\nПриклад розкладу: `щомісяця 15 10:30` або `щодня 09:00`")
     return ADD_GET_DETAILS
 
-# <<< ФУНКЦІЯ ПОВНІСТЮ ОНОВЛЕНА >>>
 def get_details_add(update, context):
     try:
         full_command_str = update.message.text
         excluded_days = []
         main_part = full_command_str
 
-        # Відокремлюємо частину з виключеннями, якщо вона є
         if ' виключити:' in full_command_str:
             main_part, excluded_part = full_command_str.split(' виключити:', 1)
             excluded_days = [day.strip() for day in excluded_part.strip().split(',') if day.strip()]
         
-        # Використовуємо shlex для надійного парсингу основної команди
         args = shlex.split(main_part)
 
         if len(args) != 3:
             raise ValueError("Неправильний формат. Потрібно: `id_чату \"розклад\" \"текст\"`.")
 
-        chat_ids_part = args[0]
-        schedule_time = args[1]
-        text = args[2]
+        chat_ids_part, schedule_time, text = args
         
         chat_ids = [chat_id.strip() for chat_id in chat_ids_part.split(',')]
         
-        if not chat_ids or not schedule_time or not text:
+        if not all([chat_ids, schedule_time, text]):
             raise ValueError("ID чату, розклад та текст не можуть бути порожніми.")
         
         new_reminder = {
-            'id': str(uuid.uuid4())[:8],
-            'chat_ids': chat_ids,
-            'schedule_time': schedule_time,
-            'text': text,
-            'excluded_days': excluded_days,
+            'id': str(uuid.uuid4())[:8], 'chat_ids': chat_ids,
+            'schedule_time': schedule_time, 'text': text, 'excluded_days': excluded_days,
             'media_file_id': context.user_data.get('media_file_id'),
             'media_type': context.user_data.get('media_type')
         }
         
         if not schedule_reminder(context.bot, new_reminder):
-            # Ця помилка тепер буде виникати тільки якщо `schedule_reminder` поверне False
             raise ValueError("Не вдалося запланувати нагадування. Перевірте формат розкладу.")
             
     except Exception as e:
@@ -218,7 +190,7 @@ def start_now(update, context):
     return NOW_GET_MEDIA
 
 def get_media_now(update, context):
-    media_file = update.message.photo[-1] if update.message.photo else update.message.animation or update.message.video
+    media_file = update.message.photo[-1] if update.message.photo else (update.message.animation or update.message.video)
     context.user_data['media_file_id'] = media_file.file_id
     context.user_data['media_type'] = 'photo' if update.message.photo else 'animation' if update.message.animation else 'video'
     update.message.reply_text("Крок 2: Надішліть деталі: `id_чату \"текст\"`")
@@ -229,7 +201,6 @@ def skip_media_now(update, context):
     update.message.reply_text("Крок 2: Надішліть деталі: `id_чату \"текст\"`")
     return NOW_GET_DETAILS
 
-# <<< ФУНКЦІЯ ПОВНІСТЮ ОНОВЛЕНА >>>
 def get_details_now(update, context):
     try:
         args = shlex.split(update.message.text)
@@ -237,8 +208,7 @@ def get_details_now(update, context):
         if len(args) != 2:
             raise ValueError("Неправильний формат. Перевірте лапки. Потрібно: `id_чату \"текст\"`")
 
-        chat_ids_part = args[0]
-        text = args[1]
+        chat_ids_part, text = args
         
         chat_ids = [chat_id.strip() for chat_id in chat_ids_part.split(',')]
 
@@ -246,9 +216,7 @@ def get_details_now(update, context):
             raise ValueError("ID чату та текст не можуть бути порожніми.")
 
         instant_reminder = {
-            'id': 'now',
-            'chat_ids': chat_ids,
-            'text': text,
+            'id': 'now', 'chat_ids': chat_ids, 'text': text,
             'media_file_id': context.user_data.get('media_file_id'),
             'media_type': context.user_data.get('media_type')
         }
