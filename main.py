@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, time as dt_time
 import os
 import pytz
+import shlex # <-- ДОДАНО ІМПОРТ
 
 # --- НАЛАШТУВАННЯ ---
 # !!! ВАЖЛИВО !!!
@@ -49,16 +50,14 @@ def save_reminders(reminders):
 
 # --- ОСНОВНІ ФУНКЦІЇ БОТА ---
 def send_reminder(bot, reminder):
-    # <<< ЗМІНЕНО: Централізована перевірка дати перед відправкою >>>
     now_kyiv = datetime.now(KYIV_TZ)
-    schedule_time_str = reminder['schedule_time']
+    schedule_time_str = reminder.get('schedule_time', '')
     
     # Перевірка для щомісячних нагадувань
     if schedule_time_str.lower().startswith('щомісяця'):
         try:
             day_of_month = int(schedule_time_str.split()[1])
             if now_kyiv.day != day_of_month:
-                # print(f"Пропуск щомісячного ID {reminder['id']}: сьогодні не {day_of_month}-е число.")
                 return 
         except (ValueError, IndexError):
             print(f"Помилка в форматі щомісячного нагадування ID {reminder['id']}.")
@@ -70,8 +69,7 @@ def send_reminder(bot, reminder):
         if current_weekday_kyiv in reminder['excluded_days']:
             print(f"[{now_kyiv.strftime('%Y-%m-%d %H:%M:%S')}] Пропущено ID {reminder['id']} (виключений день: {current_weekday_kyiv}).")
             return
-    # <<< КІНЕЦЬ ЗМІН >>>
-    
+            
     chat_ids = reminder.get('chat_ids', [])
     text = reminder['text']
     media_file_id = reminder.get('media_file_id')
@@ -89,10 +87,10 @@ def send_reminder(bot, reminder):
                     bot.send_video(chat_id=target_chat_id, video=media_file_id, caption=text, parse_mode='HTML')
             else:
                 bot.send_message(chat_id=target_chat_id, text=text, parse_mode='HTML')
-            print(f"[{now_kyiv.strftime('%Y-%m-%d %H:%M:%S')}] ✅ Повідомлення ID {reminder['id']} успішно надіслано в чат {chat_id}")
-            time.sleep(0.1) # Запобігання флуду
+            print(f"[{now_kyiv.strftime('%Y-%m-%d %H:%M:%S')}] ✅ Повідомлення ID {reminder.get('id', 'N/A')} успішно надіслано в чат {chat_id}")
+            time.sleep(0.1) 
         except Exception as e:
-            print(f"[{now_kyiv.strftime('%Y-%m-%d %H:%M:%S')}] ❌ Помилка відправки ID {reminder['id']} в чат {chat_id}: {e}")
+            print(f"[{now_kyiv.strftime('%Y-%m-%d %H:%M:%S')}] ❌ Помилка відправки ID {reminder.get('id', 'N/A')} в чат {chat_id}: {e}")
 
 
 def schedule_reminder(bot, reminder):
@@ -102,13 +100,11 @@ def schedule_reminder(bot, reminder):
     job_tag = reminder['id']
 
     try:
-        # <<< ЗМІНЕНО: Логіка планування для щомісячних завдань >>>
         if day_or_freq == 'щомісяця':
             if len(parts) != 3:
                 raise ValueError("Неправильний формат. Використовуйте 'щомісяця <день> <час>'.")
             day_of_month = int(parts[1])
             local_time_str = parts[2]
-            # Щомісячні завдання плануються на щоденний запуск, а логіка перевірки дати винесена в send_reminder
             print(f"Планування ID {reminder['id']}: щомісяця {day_of_month} о {local_time_str} (щоденна перевірка).")
             hour, minute = map(int, local_time_str.split(':'))
             kyiv_time = dt_time(hour, minute, tzinfo=KYIV_TZ)
@@ -139,14 +135,13 @@ def schedule_reminder(bot, reminder):
                 days_map[day_or_freq].at(utc_time_str).do(job_func).tag(job_tag)
         else:
             raise ValueError(f"Невідомий формат розкладу: {day_or_freq}")
-        # <<< КІНЕЦЬ ЗМІН >>>
         return True
     except Exception as e:
         print(f"❌ Помилка планування ID {reminder.get('id', 'N/A')}: {e}")
         return False
 
 
-# --- ДІАЛОГИ ТА КОМАНДИ (без змін, залишаємо як є) ---
+# --- ДІАЛОГИ ТА КОМАНДИ ---
 
 def start_add(update, context):
     if not is_user_allowed(update): return ConversationHandler.END
@@ -157,36 +152,40 @@ def get_media_add(update, context):
     media_file = update.message.photo[-1] if update.message.photo else update.message.animation or update.message.video
     context.user_data['media_file_id'] = media_file.file_id
     context.user_data['media_type'] = 'photo' if update.message.photo else 'animation' if update.message.animation else 'video'
-    update.message.reply_text("Крок 2: Надішліть деталі у форматі:\n`<id_чату,id_чату,...> \"<розклад>\" \"<текст>\" виключити:дн,дн`\n\nПриклад розкладу: `щомісяця 15 10:30` або `щодня 09:00`")
+    update.message.reply_text("Крок 2: Надішліть деталі у форматі:\n`id_чату \"розклад\" \"текст\" виключити:дн,дн`\n\nПриклад розкладу: `щомісяця 15 10:30` або `щодня 09:00`")
     return ADD_GET_DETAILS
 
 def skip_media_add(update, context):
     context.user_data['media_file_id'] = None
-    update.message.reply_text("Крок 2: Надішліть деталі у форматі:\n`<id_чату,id_чату,...> \"<розклад>\" \"<текст>\" виключити:дн,дн`\n\nПриклад розкладу: `щомісяця 15 10:30` або `щодня 09:00`")
+    update.message.reply_text("Крок 2: Надішліть деталі у форматі:\n`id_чату \"розклад\" \"текст\" виключити:дн,дн`\n\nПриклад розкладу: `щомісяця 15 10:30` або `щодня 09:00`")
     return ADD_GET_DETAILS
 
+# <<< ФУНКЦІЯ ПОВНІСТЮ ОНОВЛЕНА >>>
 def get_details_add(update, context):
     try:
         full_command_str = update.message.text
         excluded_days = []
-        if 'виключити:' in full_command_str:
-            parts = full_command_str.split(' виключити:')
-            full_command_str = parts[0].strip()
-            excluded_days = [day.strip() for day in parts[1].strip().split(',')]
+        main_part = full_command_str
+
+        # Відокремлюємо частину з виключеннями, якщо вона є
+        if ' виключити:' in full_command_str:
+            main_part, excluded_part = full_command_str.split(' виключити:', 1)
+            excluded_days = [day.strip() for day in excluded_part.strip().split(',') if day.strip()]
         
-        # Використовуємо більш надійний парсинг
-        parts = full_command_str.split('"')
-        if len(parts) < 4:
-            raise ValueError("Неправильний формат. Перевірте, чи правильно розставлені лапки. Потрібно: id \"розклад\" \"текст\".")
+        # Використовуємо shlex для надійного парсингу основної команди
+        args = shlex.split(main_part)
+
+        if len(args) != 3:
+            raise ValueError("Неправильний формат. Потрібно: `id_чату \"розклад\" \"текст\"`.")
+
+        chat_ids_part = args[0]
+        schedule_time = args[1]
+        text = args[2]
         
-        chat_ids_part = parts[0].strip()
         chat_ids = [chat_id.strip() for chat_id in chat_ids_part.split(',')]
         
-        schedule_time = parts[1].strip()
-        text = parts[3].strip()
-        
         if not chat_ids or not schedule_time or not text:
-             raise ValueError("ID чату, розклад та текст не можуть бути порожніми.")
+            raise ValueError("ID чату, розклад та текст не можуть бути порожніми.")
         
         new_reminder = {
             'id': str(uuid.uuid4())[:8],
@@ -199,6 +198,7 @@ def get_details_add(update, context):
         }
         
         if not schedule_reminder(context.bot, new_reminder):
+            # Ця помилка тепер буде виникати тільки якщо `schedule_reminder` поверне False
             raise ValueError("Не вдалося запланувати нагадування. Перевірте формат розкладу.")
             
     except Exception as e:
@@ -221,27 +221,29 @@ def get_media_now(update, context):
     media_file = update.message.photo[-1] if update.message.photo else update.message.animation or update.message.video
     context.user_data['media_file_id'] = media_file.file_id
     context.user_data['media_type'] = 'photo' if update.message.photo else 'animation' if update.message.animation else 'video'
-    update.message.reply_text("Крок 2: Надішліть деталі: `<id_чату,id_чату,...> \"<текст>\"`")
+    update.message.reply_text("Крок 2: Надішліть деталі: `id_чату \"текст\"`")
     return NOW_GET_DETAILS
 
 def skip_media_now(update, context):
     context.user_data['media_file_id'] = None
-    update.message.reply_text("Крок 2: Надішліть деталі: `<id_чату,id_чату,...> \"<текст>\"`")
+    update.message.reply_text("Крок 2: Надішліть деталі: `id_чату \"текст\"`")
     return NOW_GET_DETAILS
 
+# <<< ФУНКЦІЯ ПОВНІСТЮ ОНОВЛЕНА >>>
 def get_details_now(update, context):
     try:
-        full_command_str = update.message.text
-        parts = full_command_str.split('"')
-        if len(parts) < 2:
-            raise ValueError("Неправильний формат. Перевірте лапки.")
+        args = shlex.split(update.message.text)
+        
+        if len(args) != 2:
+            raise ValueError("Неправильний формат. Перевірте лапки. Потрібно: `id_чату \"текст\"`")
 
-        chat_ids_part = parts[0].strip()
+        chat_ids_part = args[0]
+        text = args[1]
+        
         chat_ids = [chat_id.strip() for chat_id in chat_ids_part.split(',')]
-        text = parts[1].strip()
 
         if not chat_ids or not text:
-             raise ValueError("ID чату та текст не можуть бути порожніми.")
+            raise ValueError("ID чату та текст не можуть бути порожніми.")
 
         instant_reminder = {
             'id': 'now',
@@ -258,7 +260,6 @@ def get_details_now(update, context):
     
     context.user_data.clear()
     return ConversationHandler.END
-
 
 def cancel(update, context):
     if not is_user_allowed(update): return
@@ -333,7 +334,7 @@ def delete_reminder(update, context):
     
     if len(new_reminders) < initial_count:
         save_reminders(new_reminders)
-        schedule.clear(reminder_id_to_delete) # Видаляємо завдання з планувальника
+        schedule.clear(reminder_id_to_delete)
         update.message.reply_text(f"✅ Нагадування ID `{reminder_id_to_delete}` видалено.")
     else:
         update.message.reply_text(f"🤷‍♂️ Нагадування ID `{reminder_id_to_delete}` не знайдено.")
@@ -374,12 +375,12 @@ def main():
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("help", show_help))
     dp.add_handler(CommandHandler("list", list_reminders))
-    dp.add_handler(CommandHandler("delete", delete_reminder, pass_args=True)) # pass_args=True для /delete
+    dp.add_handler(CommandHandler("delete", delete_reminder)) 
     
     print("Завантаження існуючих нагадувань...")
     for r in load_reminders():
         schedule_reminder(updater.bot, r)
-            
+        
     print("Планувальник налаштовано.")
     
     thread = threading.Thread(target=run_scheduler, daemon=True)
