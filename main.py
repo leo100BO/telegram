@@ -11,7 +11,10 @@ import pytz
 
 # --- НАЛАШТУВАННЯ ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-ADMIN_ID = int(os.environ.get('ADMIN_ID'))
+# Читаємо список дозволених ID з Secrets/Environment і перетворюємо його на список чисел
+allowed_ids_str = os.environ.get('ALLOWED_USER_IDS', '')
+ALLOWED_USER_IDS = [int(id.strip()) for id in allowed_ids_str.split(',') if id.strip()]
+
 REMINDERS_FILE = 'reminders.json'
 KYIV_TZ = pytz.timezone("Europe/Kyiv")
 WEEKDAYS_MAP = {0: 'пн', 1: 'вт', 2: 'ср', 3: 'чт', 4: 'пт', 5: 'сб', 6: 'нд'}
@@ -19,6 +22,15 @@ WEEKDAYS_MAP = {0: 'пн', 1: 'вт', 2: 'ср', 3: 'чт', 4: 'пт', 5: 'сб'
 # Визначаємо стани для діалогів
 ADD_GET_MEDIA, ADD_GET_DETAILS = range(2)
 NOW_GET_MEDIA, NOW_GET_DETAILS = range(2, 4)
+
+# --- ФУНКЦІЯ ПЕРЕВІРКИ ДОСТУПУ ---
+def is_user_allowed(update):
+    """Перевіряє, чи є користувач у списку дозволених."""
+    user_id = update.effective_user.id
+    if user_id not in ALLOWED_USER_IDS:
+        update.message.reply_text("⛔ Вибачте, у вас немає доступу до цього бота.")
+        return False
+    return True
 
 # --- РОБОТА З ФАЙЛОМ НАГАДУВАНЬ ---
 def load_reminders():
@@ -36,7 +48,6 @@ def save_reminders(reminders):
 
 # --- ОСНОВНІ ФУНКЦІЇ БОТА ---
 def send_reminder(bot, reminder):
-    # --- ОНОВЛЕНО: Додано parse_mode='HTML' ---
     if reminder.get('excluded_days'):
         current_weekday_kyiv = WEEKDAYS_MAP[datetime.now(KYIV_TZ).weekday()]
         if current_weekday_kyiv in reminder['excluded_days']:
@@ -47,7 +58,7 @@ def send_reminder(bot, reminder):
     text = reminder['text']
     media_file_id = reminder.get('media_file_id')
     media_type = reminder.get('media_type')
-
+    
     try:
         if media_file_id:
             if media_type == 'photo':
@@ -74,7 +85,7 @@ def schedule_reminder(bot, reminder):
         today_in_kyiv_at_time = now_in_kyiv.replace(hour=hour, minute=minute, second=0, microsecond=0)
         utc_dt = today_in_kyiv_at_time.astimezone(pytz.utc)
         utc_time_str = utc_dt.strftime("%H:%M")
-
+        
         print(f"Планування ID {reminder['id']}: Київський час '{local_time_str}' -> UTC час для сервера '{utc_time_str}'")
 
         if day_or_freq.lower() == 'щодня':
@@ -89,7 +100,7 @@ def schedule_reminder(bot, reminder):
 
 # --- ДІАЛОГИ ТА КОМАНДИ ---
 def start_add(update, context):
-    if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
+    if not is_user_allowed(update): return ConversationHandler.END
     update.message.reply_text("Крок 1: Надішліть фото/GIF/відео, або /skip, щоб пропустити.\n\nДля скасування введіть /cancel.")
     return ADD_GET_MEDIA
 
@@ -97,12 +108,12 @@ def get_media_add(update, context):
     media_file = update.message.photo[-1] if update.message.photo else update.message.animation or update.message.video
     context.user_data['media_file_id'] = media_file.file_id
     context.user_data['media_type'] = 'photo' if update.message.photo else 'animation' if update.message.animation else 'video'
-    update.message.reply_text("Крок 2: Надішліть деталі: `<id_чату> \"<розклад>\" \"<текст>\" [виключити:дн,дн]`")
+    update.message.reply_text("Крок 2: Надішліть деталі:\n<id_чату> \"<розклад>\" \"<текст>\" виключити:дн,дн")
     return ADD_GET_DETAILS
 
 def skip_media_add(update, context):
     context.user_data['media_file_id'] = None
-    update.message.reply_text("Крок 2: Надішліть деталі: `<id_чату> \"<розклад>\" \"<текст>\" [виключити:дн,дн]`")
+    update.message.reply_text("Крок 2: Надішліть деталі:\n<id_чату> \"<розклад>\" \"<текст>\" виключити:дн,дн")
     return ADD_GET_DETAILS
 
 def get_details_add(update, context):
@@ -131,7 +142,7 @@ def get_details_add(update, context):
     return ConversationHandler.END
 
 def start_now(update, context):
-    if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
+    if not is_user_allowed(update): return ConversationHandler.END
     update.message.reply_text("Крок 1: Надішліть фото/GIF/відео для миттєвої відправки, або /skip.\n\nДля скасування введіть /cancel.")
     return NOW_GET_MEDIA
 
@@ -139,12 +150,12 @@ def get_media_now(update, context):
     media_file = update.message.photo[-1] if update.message.photo else update.message.animation or update.message.video
     context.user_data['media_file_id'] = media_file.file_id
     context.user_data['media_type'] = 'photo' if update.message.photo else 'animation' if update.message.animation else 'video'
-    update.message.reply_text("Крок 2: Надішліть деталі для відправки: `<id_чату> \"<текст>\"`")
+    update.message.reply_text("Крок 2: Надішліть деталі для відправки: <id_чату> \"<текст>\"")
     return NOW_GET_DETAILS
 
 def skip_media_now(update, context):
     context.user_data['media_file_id'] = None
-    update.message.reply_text("Крок 2: Надішліть деталі для відправки: `<id_чату> \"<текст>\"`")
+    update.message.reply_text("Крок 2: Надішліть деталі для відправки: <id_чату> \"<текст>\"")
     return NOW_GET_DETAILS
 
 def get_details_now(update, context):
@@ -163,24 +174,24 @@ def get_details_now(update, context):
     return ConversationHandler.END
 
 def cancel(update, context):
+    if not is_user_allowed(update): return
     update.message.reply_text("Дію скасовано.")
     context.user_data.clear()
     return ConversationHandler.END
 
 def start(update, context):
-    user_id = update.effective_user.id
-    update.message.reply_text(f"👋 Привіт! Я бот для нагадувань.\nВаш Telegram ID: `{user_id}`")
-    if user_id == ADMIN_ID:
+    update.message.reply_text(f"👋 Привіт! Я бот для нагадувань.\nВаш Telegram ID: `{update.effective_user.id}`")
+    if is_user_allowed(update):
         show_help(update, context)
 
 def show_help(update, context):
-    """Надсилає довідкове повідомлення."""
+    if not is_user_allowed(update): return
     help_text = (
         "*Довідка по командам:*\n\n"
         "`/add` - Запустити діалог для створення нового нагадування.\n\n"
         "`/now` - Запустити діалог для миттєвої відправки повідомлення.\n\n"
         "`/list` - Показати список усіх активних нагадувань.\n\n"
-        "`/delete <ID>` - Видалити нагадування. Наприклад: `/delete 1a2b3c4d`\n\n"
+        "`/delete <ID>` - Видалити нагадування.\n\n"
         "`/cancel` - Скасувати поточну дію (`/add` або `/now`).\n\n"
         "`/help` - Показати цю довідку.\n\n"
         "Для форматування тексту використовуйте HTML-теги:\n"
@@ -189,21 +200,38 @@ def show_help(update, context):
     update.message.reply_text(help_text, parse_mode='Markdown')
 
 def list_reminders(update, context):
-    if update.effective_user.id != ADMIN_ID: return
+    """(ОНОВЛЕНО) Надсилає список нагадувань частинами."""
+    if not is_user_allowed(update): return
     reminders = load_reminders()
     if not reminders:
         update.message.reply_text("Список нагадувань порожній."); return
-    message = "📋 *Активні нагадування:*\n\n"
+
+    message_part = "📋 *Активні нагадування:*\n\n"
+    
     for r in reminders:
-        message += f"*ID:* `{r['id']}`\n*Чат:* `{r['chat_id']}`\n*Розклад:* `{r['schedule_time']}`\n"
-        if r.get('excluded_days'): message += f"*Виключені дні:* {', '.join(r['excluded_days'])}\n"
-        message += f"*Текст:* _{r['text']}_\n"
-        if r.get('media_file_id'): message += f"*Медіа:* Прикріплено\n"
-        message += "--------------------\n"
-    update.message.reply_text(message, parse_mode='Markdown')
+        reminder_text = (
+            f"*ID:* `{r['id']}`\n"
+            f"*Чат:* `{r['chat_id']}`\n"
+            f"*Розклад:* `{r['schedule_time']}`\n"
+        )
+        if r.get('excluded_days'):
+            reminder_text += f"*Виключені дні:* {', '.join(r['excluded_days'])}\n"
+        reminder_text += f"*Текст:* _{r['text']}_\n"
+        if r.get('media_file_id'):
+            reminder_text += f"*Медіа:* Прикріплено\n"
+        reminder_text += "--------------------\n"
+        
+        if len(message_part) + len(reminder_text) > 4096:
+            update.message.reply_text(message_part, parse_mode='Markdown')
+            message_part = reminder_text
+        else:
+            message_part += reminder_text
+
+    if message_part:
+        update.message.reply_text(message_part, parse_mode='Markdown')
 
 def delete_reminder(update, context):
-    if update.effective_user.id != ADMIN_ID: return
+    if not is_user_allowed(update): return
     try: reminder_id_to_delete = context.args[0]
     except IndexError:
         update.message.reply_text("❌ Вкажіть ID нагадування.", parse_mode='Markdown'); return
@@ -222,7 +250,7 @@ def run_scheduler():
         time.sleep(1)
 
 def main():
-    updater = Updater(BOT_TOKEN, use_context=True)
+    updater = Updater(BOT_TOKEN, use_context=True, persistent=True)
     dp = updater.dispatcher
 
     add_conv = ConversationHandler(entry_points=[CommandHandler('add', start_add)], states={ADD_GET_MEDIA: [MessageHandler(Filters.photo | Filters.video | Filters.animation, get_media_add), CommandHandler('skip', skip_media_add)], ADD_GET_DETAILS: [MessageHandler(Filters.text & ~Filters.command, get_details_add)]}, fallbacks=[CommandHandler('cancel', cancel)])
@@ -234,19 +262,19 @@ def main():
     dp.add_handler(CommandHandler("help", show_help))
     dp.add_handler(CommandHandler("list", list_reminders))
     dp.add_handler(CommandHandler("delete", delete_reminder))
-
+    
     print("Завантаження існуючих нагадувань...")
     for r in load_reminders():
         try: schedule_reminder(updater.bot, r)
         except Exception as e: print(f"Помилка при завантаженні існуючого нагадування ID {r.get('id', 'N/A')}: {e}")
-
+            
     print("Планування завершено.")
-
+    
     thread = threading.Thread(target=run_scheduler); thread.daemon = True; thread.start()
-
+    
     print("Бот запущений...")
     updater.start_polling()
     updater.idle()
-  
+
 if __name__ == '__main__':
     main()
